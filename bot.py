@@ -23,7 +23,7 @@ def run_health_check_server():
 threading.Thread(target=run_health_check_server, daemon=True).start()
 
 # ----------------- НАЛАШТУВАННЯ -----------------
-TELEGRAM_BOT_TOKEN = "8767386740:AAHkzTYMlhlZqRMX_O0_MaD5zWI8oGGukiA"
+TELEGRAM_BOT_TOKEN = "8767386740:AAG_vZSBP-duKwFR_YYgSN-Yr7ia39rSw6c"
 OPENAI_API_KEY = "ТВІЙ_OPENAI_API_KEY"  
 
 # ВСТАВТЕ СЮДИ ПОСИЛАННЯ НА ОПУБЛІКОВАНИЙ CSV З GOOGLE ТАБЛИЦІ:
