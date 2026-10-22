@@ -1,4 +1,4 @@
-import os
+[23.10.2026 1:36] Сергій Олійник: import os
 import re
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -19,19 +19,22 @@ def run_health_check_server():
     server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
     server.serve_forever()
 
-# Запускаємо сервер у фоновому потоці, щоб Render бачив відкритий порт
+# Запускаємо сервер у фоновому потоці для Render
 threading.Thread(target=run_health_check_server, daemon=True).start()
 
 # ----------------- НАЛАШТУВАННЯ -----------------
 TELEGRAM_BOT_TOKEN = "8767386740:AAHkzTYMlhlZqRMX_O0_MaD5zWI8oGGukiA"
 OPENAI_API_KEY = "ТВІЙ_OPENAI_API_KEY"  
-FILE_PATH = "шини 2026 (2).xlsx"
+
+# ВСТАВТЕ СЮДИ ПОСИЛАННЯ НА ОПУБЛІКОВАНИЙ CSV З GOOGLE ТАБЛИЦІ:
+GOOGLE_SHEET_CSV_URL = "ВСТАВТЕ_СЮДИ_ПОСИЛАННЯ_НА_CSV"
 
 openai.api_key = OPENAI_API_KEY
 
 def load_data():
-    """Завантаження та очищення даних з Excel"""
-    df = pd.read_excel(FILE_PATH, sheet_name="Шини", skiprows=2)
+    """Завантаження та очищення даних безпосередньо з Google Таблиці"""
+    # Читаємо актуальну CSV-версію прямо з інтернету
+    df = pd.read_csv(GOOGLE_SHEET_CSV_URL, skiprows=2)
     df.columns = ["pallet", "code", "size", "name", "qty"]
     df = df.dropna(subset=["code"])
     df["code"] = df["code"].astype(str).str.replace(".0", "", regex=False).str.strip()
@@ -39,7 +42,11 @@ def load_data():
 
 # ----------------- ФУНКЦІЯ ПОШУКУ -----------------
 def search_tires(query: str) -> str:
-    df = load_data()
+    try:
+        df = load_data()
+    except Exception as e:
+        return f"⚠️ Помилка завантаження даних з Google Таблиці: {e}"
+
     query_clean = query.strip().lower()
     
     # Пошук за кодом (артикулом), розміром або назвою
@@ -59,7 +66,6 @@ def search_tires(query: str) -> str:
     
     text = f"🔍 Результати пошуку за запитом: *{query}*\n\n"
     for _, row in results.iterrows():
-        # Виводимо значення палети/локації як є (без перетворення в int)
         pallet_info = row['pallet']
         text += (
             f"📍 Локація / Палета: {pallet_info}\n"
@@ -93,8 +99,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     voice_file = await context.bot.get_file(update.message.voice.file_id)
     file_path = "voice.ogg"
     await voice_file.download_to_drive(file_path)
-    
-    try:
+try:
         with open(file_path, "rb") as audio:
             transcript = openai.Audio.transcribe("whisper-1", audio, language="uk")
         
