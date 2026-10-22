@@ -99,7 +99,8 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     voice_file = await context.bot.get_file(update.message.voice.file_id)
     file_path = "voice.ogg"
     await voice_file.download_to_drive(file_path)
-try:
+    
+    try:
         with open(file_path, "rb") as audio:
             transcript = openai.Audio.transcribe("whisper-1", audio, language="uk")
         
