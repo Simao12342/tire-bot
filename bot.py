@@ -1,9 +1,26 @@
 import os
 import re
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 import pandas as pd
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 import openai
+
+# ----------------- ФОНОВИЙ ВЕБ-СЕРВЕР ДЛЯ RENDER -----------------
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+
+def run_health_check_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    server.serve_forever()
+
+# Запускаємо сервер у фоновому потоці, щоб Render бачив відкритий порт
+threading.Thread(target=run_health_check_server, daemon=True).start()
 
 # ----------------- НАЛАШТУВАННЯ -----------------
 TELEGRAM_BOT_TOKEN = "8767386740:AAHkzTYMlhlZqRMX_O0_MaD5zWI8oGGukiA"
@@ -82,7 +99,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             transcript = openai.Audio.transcribe("whisper-1", audio, language="uk")
         
         recognized_text = transcript["text"]
-        await msg.edit_text(f"🗣 Розпізнано: *«{recognized_text}»*", parse_mode="Markdown")
+[23.10.2026 1:05] Сергій Олійник: await msg.edit_text(f"🗣 Розпізнано: *«{recognized_text}»*", parse_mode="Markdown")
         
         response = search_tires(recognized_text)
         await update.message.reply_markdown(response)
@@ -93,7 +110,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             os.remove(file_path)
 
 # ----------------- ЗАПУСК -----------------
-if __name__ == "__main__":
+if name == "main":
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
