@@ -1,4 +1,4 @@
-[23.10.2026 1:36] Сергій Олійник: import os
+import os
 import re
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
