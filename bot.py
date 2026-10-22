@@ -27,7 +27,7 @@ TELEGRAM_BOT_TOKEN = "8767386740:AAHkzTYMlhlZqRMX_O0_MaD5zWI8oGGukiA"
 OPENAI_API_KEY = "ТВІЙ_OPENAI_API_KEY"  
 
 # ВСТАВТЕ СЮДИ ПОСИЛАННЯ НА ОПУБЛІКОВАНИЙ CSV З GOOGLE ТАБЛИЦІ:
-GOOGLE_SHEET_CSV_URL = "ВСТАВТЕ_СЮДИ_ПОСИЛАННЯ_НА_CSV"
+GOOGLE_SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vT07yymF_cQqHWn64-sW4fVFJee_YKcvWNRtkY07aheMSOAxIXrd1TvXfmSr3TK3A/pub?gid=1510969474&single=true&output=csv"
 
 openai.api_key = OPENAI_API_KEY
 
