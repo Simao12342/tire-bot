@@ -99,7 +99,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             transcript = openai.Audio.transcribe("whisper-1", audio, language="uk")
         
         recognized_text = transcript["text"]
-[23.10.2026 1:05] Сергій Олійник: await msg.edit_text(f"🗣 Розпізнано: *«{recognized_text}»*", parse_mode="Markdown")
+        await msg.edit_text(f"🗣 Розпізнано: *«{recognized_text}»*", parse_mode="Markdown")
         
         response = search_tires(recognized_text)
         await update.message.reply_markdown(response)
