@@ -220,7 +220,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             os.remove(file_path)
 
 # ----------------- ЗАПУСК -----------------
-if name == "main":
+if __name__ == "__main__":
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
