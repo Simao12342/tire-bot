@@ -110,15 +110,15 @@ def search_tires(query: str):
                     
     return results
 
-# ----------------- ПОШУК ФОТО В ПАПЦІ PHOTOS -----------------
+# ----------------- ПОШУК ФОТО В ПАПЦІ PHOTO -----------------
 def get_tire_photo(name):
-    photos_dir = "photos"
+    photos_dir = "photo"  # ВИПРАВЛЕНО: назва папки тепер точно відповідає GitHub ("photo")
     if not os.path.exists(photos_dir):
         return None
     
     name_lower = str(name).lower()
     for filename in os.listdir(photos_dir):
-        if filename.lower().endswith(('.jpg', '.jpeg', '.png')):
+        if filename.lower().endswith(('.jpg', '.jpeg', '.png', '.webp', '.avif')):
             keyword = os.path.splitext(filename)[0].lower()
             if len(keyword) >= 3 and keyword in name_lower:
                 return os.path.join(photos_dir, filename)
@@ -398,7 +398,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        # Безпечне оновлення залежно від того, чи є в повідомленні фото
         if query.message.photo:
             lines = query.message.caption.split("\n") if query.message.caption else []
             for i, line in enumerate(lines):
@@ -469,8 +468,7 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(CallbackQueryHandler(handle_callback))
     
-    # Реєстрація обробника помилок, щоб логі були чистими
     app.add_error_handler(error_handler)
     
-    print("🤖 Бот успішно запущений!") 
+    print("🤖 Бот успішно запущений з підтримкою папки photo!") 
     app.run_polling()
