@@ -42,10 +42,8 @@ def log_to_history(user, code, action, old_qty, new_qty):
         gc = gspread.service_account(filename="credentials.json")
         spreadsheet = gc.open("шини 2026")
         
-        # Відкриваємо аркуш 'Історія'
         history_sheet = spreadsheet.worksheet("Історія")
         
-        # Формуємо дані про час та користувача
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         username = f"@{user.username}" if user.username else f"{user.first_name} (ID: {user.id})"
         
@@ -56,7 +54,6 @@ def log_to_history(user, code, action, old_qty, new_qty):
         else:
             action_text = "Встановлено точну кількість"
         
-        # Додаємо новий рядок із даними в журнал
         history_sheet.append_row([now, username, str(code), action_text, old_qty, new_qty])
     except Exception as e:
         print(f"⚠️ Помилка запису в історію: {e}")
@@ -110,6 +107,103 @@ def search_tires(query: str):
                     
     return results
 
+# ----------------- КОМАНДА СТАТИСТИКИ -----------------
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        sheet = get_worksheet()
+        data = sheet.get_all_values()
+        rows = data[3:]  # Дані з 4-го рядка
+        
+        df = pd.DataFrame(rows, columns=["pallet", "code", "size", "name", "qty"])
+        df = df.dropna(subset=["code"])
+        df["qty"] = pd.to_numeric(df["qty"], errors="coerce").fillna(0)
+        
+        # 1. Загальні показники
+        total_positions = len(df)
+        total_qty = int(df["qty"].sum())
+        zero_qty = len(df[df["qty"] == 0])
+        
+        # 2. Сезонність
+        def get_season(name):
+            n = str(name).lower()
+            if any(w in n for w in ["зим", "зима", "winter", "шип"]):
+                return "❄️ Зимові"
+            elif any(w in n for w in ["літ", "літо", "summer"]):
+                return "☀️ Літні"
+            elif any(w in n for w in ["всесез", "all"]):
+                return "🌦 Всесезонні"
+            return "📦 Інші"
+        
+        df["season"] = df["name"].apply(get_season)
+        season_stats = df.groupby("season")["qty"].sum().to_dict()
+        
+        # 3. Радіус
+        def get_radius(size_str):
+            match = re.search(r'R\d+', str(size_str), re.IGNORECASE)
+            return match.group(0).upper() if match else "Інші"
+        
+        df["radius"] = df["size"].apply(get_radius)
+        radius_stats = df.groupby("radius")["qty"].sum().to_dict()
+        
+        # 4. Виробник
+        brands = [
+            "Premiori", "Rosava", "Bridgestone", "Michelin", "Nokian", "Hankook", 
+            "Continental", "Goodyear", "Matador", "Barum", "Cordiant", "Tigar", 
+            "Kormoran", "Sailun", "Triangle", "Windforce", "Imperial", "Orium", 
+            "Falken", "Dunlop", "Pirelli", "Yokohama", "Kumho", "Nexen", "BFGoodrich",
+            "Firestone", "Toyo", "Lassa", "Mastersteel", "Roadstone"
+        ]
+        
+        def get_brand(name):
+            n = str(name)
+            n_lower = n.lower()
+            for b in brands:
+                if b.lower() in n_lower:
+                    return b
+            words = n.split()
+            for w in words:
+                if w.lower() not in ["автошина", "шина", "комплект", "шт."] and len(w) > 2:
+                    return w.capitalize()
+            return "Інший"
+        
+        df["brand"] = df["name"].apply(get_brand)
+        brand_stats = df.groupby("brand")["qty"].sum().to_dict()
+        
+        # 5. Виробник і розмір
+        brand_size_df = df.groupby(["brand", "radius"])["qty"].sum().reset_index()
+        brand_size_df = brand_size_df[brand_size_df["qty"] > 0].sort_values(by="qty", ascending=False)
+        
+        # Формуємо текст звіту
+        text = (
+            "📊 **Зведена статистика складу шин**\n\n"
+            f"📦 **Загалом на складі:** {total_qty} шт. ({total_positions} позицій)\n"
+            f"⚠️ **Позицій з нульовим залишком:** {zero_qty}\n\n"
+            "❄️ **По сезонності:**\n"
+        )
+        for season, q in season_stats.items():
+            if q > 0:
+                text += f"• {season}: {q} шт.\n"
+        
+        text += "\n⬡ **По радіусу:**\n"
+        for rad, q in sorted(radius_stats.items()):
+            if q > 0:
+                text += f"• {rad}: {q} шт.\n"
+        
+        text += "\n🏭 **По виробниках:**\n"
+        sorted_brands = sorted(brand_stats.items(), key=lambda x: x[1], reverse=True)
+        for brand, q in sorted_brands:
+            if q > 0:
+                text += f"• {brand}: {q} шт.\n"
+        
+        text += "\n📌 **Топ комбінацій (Виробник + Радіус):**\n"
+        for _, row in brand_size_df.head(10).iterrows():
+            text += f"• {row['brand']} ({row['radius']}): {row['qty']} шт.\n"
+            
+        await update.message.reply_text(text, parse_mode="Markdown")
+        
+    except Exception as e:
+        await update.message.reply_text(f"⚠️ Помилка формування статистики: {e}")
+
 # ----------------- ОБРОБНИКИ ТЕЛЕГРАМ -----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -117,28 +211,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Ось що я вмію робити:\n\n"
         "🔍 **Пошук товарів:**\n"
         "• Надсилай текстовий запит (артикул, розмір або назву).\n"
-        "• Або використовуй **голосові повідомлення** (Whisper розпізнає їх автоматично).\n\n"
+        "• Або використовуй **голосові повідомлення**.\n\n"
         "📊 **Керування залишками:**\n"
-        "• **`➖ 1` / `➕ 1`** — швидка зміна кількості прямо кнопками.\n"
-        "• ** `К-сть: X` ** — натисни на центральну кнопку, щоб ввести точне нове число в чаті.\n\n"
+        "• **`➖ 1` / `➕ 1`** — швидка зміна кількості кнопками.\n"
+        "• **`К-сть: X`** — натисни на центральну кнопку, щоб ввести точне число в чаті.\n\n"
+        "📈 **Аналітика та звітність:**\n"
+        "• Використовуй команду **`/stats`**, щоб отримати повну статистику складу по кількості, сезонності, радіусах та виробниках!\n\n"
         "📋 **Аудит та історія:**\n"
-        "• Усі зміни залишків автоматично та миттєво фіксуються в журналі (`Історія`) у Google Таблиці з урахуванням часу та користувача.\n\n"
-        "👇 **Просто надішли мені артикул або розмір шини, щоб почати роботу!**",
+        "• Усі зміни автоматично фіксуються в журналі (`Історія`) у Google Таблиці.\n\n"
+        "👇 **Надішли мені артикул або натисни `/stats` для перегляду звіту!**",
         parse_mode="Markdown"
     )
-    
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data = context.user_data
     
-    # Якщо користувач натиснув кнопку введення точної кількості і тепер пише число:
     if "waiting_for_row" in user_data:
         row_index = user_data.pop("waiting_for_row")
         text_input = update.message.text.strip()
         
         if not text_input.isdigit():
             await update.message.reply_text("⚠️ Будь ласка, введіть числове значення для кількості:")
-            user_data["waiting_for_row"] = row_index  # Повертаємо стан очікування
+            user_data["waiting_for_row"] = row_index
             return
             
         new_qty = int(text_input)
@@ -147,11 +241,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             current_qty_str = sheet.cell(row_index, 5).value
             current_qty = int(current_qty_str) if current_qty_str and str(current_qty_str).isdigit() else 0
             
-            # Оновлюємо значення в таблиці
             sheet.update_cell(row_index, 5, new_qty)
             item_code = sheet.cell(row_index, 2).value
             
-            # Записуємо в історію
             log_to_history(update.effective_user, item_code, "set", current_qty, new_qty)
             
             await update.message.reply_text(f"✅ Успішно встановлено нову кількість: *{new_qty} шт.* (Артикул: {item_code})", parse_mode="Markdown")
@@ -159,7 +251,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"⚠️ Помилка оновлення: {e}")
         return
 
-    # Звичайний текстовий пошук шин
     query = update.message.text
     results = search_tires(query)
     
@@ -180,7 +271,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• Кількість: {item['qty']} шт."
         )
         
-        # Кнопки керування: -1, Точне введення (по центру), +1
         keyboard = [
             [
                 InlineKeyboardButton("➖ 1", callback_data=f"dec_{item['row_index']}"),
@@ -199,7 +289,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     action, row_index_str = data.split("_")
     row_index = int(row_index_str)
     
-    # Якщо клікнули на центральну кнопку з кількістю — активуємо режим введення точної кількості
     if action == "set":
         context.user_data["waiting_for_row"] = row_index
         await query.message.reply_text("⌨️ Будь ласка, надішліть у чат **нову точну кількість** (тільки число) для цього товару:")
@@ -207,7 +296,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         sheet = get_worksheet()
-        current_qty_str = sheet.cell(row_index, 5).value  # Стовпець E — кількість
+        current_qty_str = sheet.cell(row_index, 5).value
         current_qty = int(current_qty_str) if current_qty_str and str(current_qty_str).isdigit() else 0
         
         if action == "inc":
@@ -217,16 +306,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             return
             
-        # 1. Записуємо нове значення у головний аркуш Google Таблиці
         sheet.update_cell(row_index, 5, new_qty)
-        
-        # 2. Отримуємо артикул товару для журналу дій (стовпець B)
         item_code = sheet.cell(row_index, 2).value
-        
-        # 3. Додаємо факт зміни у файл журналювання ("Історія")
         log_to_history(query.from_user, item_code, action, current_qty, new_qty)
         
-        # 4. Оновлюємо текст повідомлення в Telegram
         original_text = query.message.text
         lines = original_text.split("\n")
         for i, line in enumerate(lines):
@@ -234,7 +317,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 lines[i] = f"• Кількість: {new_qty} шт."
         updated_text = "\n".join(lines)
         
-        # 5. Оновлюємо кнопки з новою кількістю
         keyboard = [
             [
                 InlineKeyboardButton("➖ 1", callback_data=f"dec_{row_index}"),
@@ -302,9 +384,11 @@ if __name__ == "__main__":
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(CallbackQueryHandler(handle_callback))
     
-    print("🤖 Бот запущений і готовий до роботи!") 
+    print("🤖 Бот запущений і готовий до роботи зі статистикою!") 
     app.run_polling()
+        
