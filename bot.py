@@ -26,7 +26,7 @@ threading.Thread(target=run_health_check_server, daemon=True).start()
 
 # ----------------- НАЛАШТУВАННЯ -----------------
 TELEGRAM_BOT_TOKEN = "8767386740:AAG_vZSBP-duKwFR_YYgSN-Yr7ia39rSw6c"
-OPENAI_API_KEY = "ТВІЙ_OPENAI_API_KEY"  
+OPENAI_API_KEY = "ТВІЙ_OPENAI_API_KEY"  # Замініть або налаштуйте в Render
 
 openai.api_key = OPENAI_API_KEY
 
@@ -38,11 +38,9 @@ def get_worksheet():
 
 # ----------------- ФУНКЦІЯ ЛОГУВАННЯ У ЖУРНАЛ -----------------
 def log_to_history(user, code, action, old_qty, new_qty):
-    """Записує подію зміни залишку на аркуш 'Історія'"""
     try:
         gc = gspread.service_account(filename="credentials.json")
         spreadsheet = gc.open("шини 2026")
-        
         history_sheet = spreadsheet.worksheet("Історія")
         
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -81,7 +79,7 @@ def search_tires(query: str):
         name_str = str(row["name"]).lower()
         
         if query_clean in code_str or query_clean in size_str or query_clean in name_str:
-            sheet_row_index = idx + 4  # Реальний номер рядка в Google Таблиці
+            sheet_row_index = idx + 4
             results.append({
                 "row_index": sheet_row_index,
                 "pallet": row["pallet"],
@@ -108,6 +106,21 @@ def search_tires(query: str):
                     
     return results
 
+# ----------------- ПОШУК ФОТО В ПАПЦІ PHOTOS -----------------
+def get_tire_photo(name):
+    """Шукає фото в папці photos за ключовим словом з назви шини"""
+    photos_dir = "photos"
+    if not os.path.exists(photos_dir):
+        return None
+    
+    name_lower = str(name).lower()
+    for filename in os.listdir(photos_dir):
+        if filename.lower().endswith(('.jpg', '.jpeg', '.png')):
+            keyword = os.path.splitext(filename)[0].lower()
+            if len(keyword) >= 3 and keyword in name_lower:
+                return os.path.join(photos_dir, filename)
+    return None
+
 # ----------------- КОМАНДА СТАТИСТИКИ -----------------
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -125,11 +138,11 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         def get_season(name):
             n = str(name).lower()
-            if any(w in n for w in ["зим", "зима", "winter", "шип"]):
+            if any(w in n for w in ["зима", "зимовий", "winter", "шип", "ice", "snow"]):
                 return "❄️ Зимові"
-            elif any(w in n for w in ["літ", "літо", "summer"]):
+            elif any(w in n for w in ["літо", "літній", "summer"]):
                 return "☀️ Літні"
-            elif any(w in n for w in ["всесез", "all"]):
+            elif any(w in n for w in ["всесезон", "all weather", "all-season", "4seasons"]):
                 return "🌦 Всесезонні"
             return "📦 Інші"
         
@@ -148,7 +161,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Continental", "Goodyear", "Matador", "Barum", "Cordiant", "Tigar", 
             "Kormoran", "Sailun", "Triangle", "Windforce", "Imperial", "Orium", 
             "Falken", "Dunlop", "Pirelli", "Yokohama", "Kumho", "Nexen", "BFGoodrich",
-            "Firestone", "Toyo", "Lassa", "Mastersteel", "Roadstone"
+            "Firestone", "Toyo", "Lassa", "Mastersteel", "Roadstone", "Aosen", "Estrada", "Powertrac", "Petlas", "Horizon", "Hifly"
         ]
         
         def get_brand(name):
@@ -199,6 +212,43 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"⚠️ Помилка формування статистики: {e}")
 
+# ----------------- УНІВЕРСАЛЬНА ФУНКЦІЯ ВІДПРАВКИ ТОВАРУ З ФОТО -----------------
+async def send_tire_card(update: Update, item):
+    text = (
+        f"📍 Локація / Палета: {item['pallet']}\n"
+        f"• Артикул: {item['code']}\n"
+        f"• Розмір: {item['size']}\n"
+        f"• Назва: {item['name']}\n"
+        f"• Кількість: {item['qty']} шт."
+    )
+    
+    keyboard = [
+        [
+            InlineKeyboardButton("➖ 1", callback_data=f"dec_{item['row_index']}"),
+            InlineKeyboardButton(f"К-сть: {item['qty']}", callback_data=f"set_{item['row_index']}"),
+            InlineKeyboardButton("➕ 1", callback_data=f"inc_{item['row_index']}")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    # Шукаємо локальне фото
+    photo_path = get_tire_photo(item['name'])
+    
+    if photo_path and os.path.exists(photo_path):
+        with open(photo_path, 'rb') as photo_file:
+            await update.message.reply_photo(
+                photo=photo_file,
+                caption=text,
+                parse_mode="Markdown",
+                reply_markup=reply_markup
+            )
+    else:
+        await update.message.reply_text(
+            text=text,
+            parse_mode="Markdown",
+            reply_markup=reply_markup
+        )
+
 # ----------------- ОБРОБНИКИ ТЕЛЕГРАМ -----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -206,16 +256,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Ось що я вмію робити:\n\n"
         "🔍 **Пошук товарів:**\n"
         "• Надсилай текстовий запит (артикул, розмір або назву).\n"
-        "• **Сфотографуй цінник** — я автоматично зчитаю 8-значний артикул після «арт.»!\n"
+        "• **Сфотографуй цінник** — я зчитаю 8-значний артикул після «арт.» і надішлю фото та залишки!\n"
         "• Використовуй **голосові повідомлення**.\n\n"
         "📊 **Керування залишками:**\n"
-        "• **`➖ 1` / `➕ 1`** — швидка зміна кількості кнопками.\n"
-        "• **`К-сть: X`** — натисни на центральну кнопку, щоб ввести точне число в чаті.\n\n"
+        "• **`➖ 1` / `➕ 1`** та кнопка зміни точної кількості.\n\n"
         "📈 **Аналітика та звітність:**\n"
         "• Команда **`/stats`** для перегляду статистики складу!\n\n"
         "📋 **Аудит та історія:**\n"
-        "• Усі зміни автоматично фіксуються в журналі (`Історія`) у Google Таблиці.\n\n"
-        "👇 **Сфотографуй цінник або надішли запит, щоб почати!**",
+        "• Усі зміни автоматично фіксуються в журналі (`Історія`) у Google Таблиці.",
         parse_mode="Markdown"
     )
 
@@ -259,25 +307,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     for item in results:
-        text = (
-            f"📍 Локація / Палета: {item['pallet']}\n"
-            f"• Артикул: {item['code']}\n"
-            f"• Розмір: {item['size']}\n"
-            f"• Назва: {item['name']}\n"
-            f"• Кількість: {item['qty']} шт."
-        )
-        
-        keyboard = [
-            [
-                InlineKeyboardButton("➖ 1", callback_data=f"dec_{item['row_index']}"),
-                InlineKeyboardButton(f"К-сть: {item['qty']}", callback_data=f"set_{item['row_index']}"),
-                InlineKeyboardButton("➕ 1", callback_data=f"inc_{item['row_index']}")
-            ]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(text, reply_markup=reply_markup)
+        await send_tire_card(update, item)
 
-# ----------------- ОБРОБНИК ФОТО (РОЗПІЗНАВАННЯ АРТИКУЛА З ЦІННИКА) -----------------
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not OPENAI_API_KEY or OPENAI_API_KEY == "ТВІЙ_OPENAI_API_KEY":
         await update.message.reply_text("⚠️ OpenAI API ключ не налаштовано для розпізнавання фото.")
@@ -285,17 +316,14 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg = await update.message.reply_text("🔍 Аналізую цінник і шукаю артикул...")
     
-    # Завантажуємо фото від користувача
     photo_file = await update.message.photo[-1].get_file()
     file_path = "photo.jpg"
     await photo_file.download_to_drive(file_path)
     
     try:
-        # Кодуємо картинку в base64
         with open(file_path, "rb") as image_file:
             base64_image = base64.b64encode(image_file.read()).decode('utf-8')
             
-        # Звертаємося до OpenAI Vision API (gpt-4o-mini)
         client = openai.OpenAI(api_key=OPENAI_API_KEY)
         response = client.chat.completions.create(
             model="gpt-4o-mini",
@@ -322,7 +350,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         extracted_code = response.choices.message.content.strip()
         await msg.edit_text(f"🏷 Розпізнано артикул з цінника: *{extracted_code}*", parse_mode="Markdown")
         
-        # Шукаємо товар у таблиці за розпізнаним артикулом
         results = search_tires(extracted_code)
         if isinstance(results, str):
             await update.message.reply_text(results)
@@ -332,22 +359,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         for item in results:
-            text = (
-                f"📍 Локація / Палета: {item['pallet']}\n"
-                f"• Артикул: {item['code']}\n"
-                f"• Розмір: {item['size']}\n"
-                f"• Назва: {item['name']}\n"
-                f"• Кількість: {item['qty']} шт."
-            )
-            keyboard = [
-                [
-                    InlineKeyboardButton("➖ 1", callback_data=f"dec_{item['row_index']}"),
-                    InlineKeyboardButton(f"К-сть: {item['qty']}", callback_data=f"set_{item['row_index']}"),
-                    InlineKeyboardButton("➕ 1", callback_data=f"inc_{item['row_index']}")
-                ]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await update.message.reply_text(text, reply_markup=reply_markup)
+            await send_tire_card(update, item)
             
     except Exception as e:
         await msg.edit_text(f"⚠️ Помилка обробки фото: {e}")
@@ -384,13 +396,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         item_code = sheet.cell(row_index, 2).value
         log_to_history(query.from_user, item_code, action, current_qty, new_qty)
         
-        original_text = query.message.text
-        lines = original_text.split("\n")
-        for i, line in enumerate(lines):
-            if line.startswith("• Кількість:"):
-                lines[i] = f"• Кількість: {new_qty} шт."
-        updated_text = "\n".join(lines)
-        
+        # Оновлюємо текст повідомлення (якщо це був текстовий підпис під фото, використовуємо caption)
         keyboard = [
             [
                 InlineKeyboardButton("➖ 1", callback_data=f"dec_{row_index}"),
@@ -399,7 +405,21 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(text=updated_text, reply_markup=reply_markup)
+        
+        if query.message.caption:
+            lines = query.message.caption.split("\n")
+            for i, line in enumerate(lines):
+                if line.startswith("• Кількість:"):
+                    lines[i] = f"• Кількість: {new_qty} шт."
+            updated_text = "\n".join(lines)
+            await query.edit_message_caption(caption=updated_text, reply_markup=reply_markup)
+        else:
+            lines = query.message.text.split("\n")
+            for i, line in enumerate(lines):
+                if line.startswith("• Кількість:"):
+                    lines[i] = f"• Кількість: {new_qty} шт."
+            updated_text = "\n".join(lines)
+            await query.edit_message_text(text=updated_text, reply_markup=reply_markup)
         
     except Exception as e:
         await query.answer(f"⚠️ Помилка оновлення: {e}", show_alert=True)
@@ -430,25 +450,10 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         for item in results:
-            text = (
-                f"📍 Локація / Палета: {item['pallet']}\n"
-                f"• Артикул: {item['code']}\n"
-                f"• Розмір: {item['size']}\n"
-                f"• Назва: {item['name']}\n"
-                f"• Кількість: {item['qty']} шт."
-            )
-            keyboard = [
-                [
-                    InlineKeyboardButton("➖ 1", callback_data=f"dec_{item['row_index']}"),
-                    InlineKeyboardButton(f"К-сть: {item['qty']}", callback_data=f"info_{item['row_index']}"),
-                    InlineKeyboardButton("➕ 1", callback_data=f"inc_{item['row_index']}")
-                ]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await update.message.reply_text(text, reply_markup=reply_markup)
+            await send_tire_card(update, item)
             
     except Exception as e:
-        await msg.edit_text(f"⚠️ Помилка розпізнавання голосу: {e}")
+        await msg.edit_text(f5"⚠️ Помилка розпізнавання голосу: {e}")
     finally:
         if os.path.exists(file_path):
             os.remove(file_path)
@@ -460,9 +465,10 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))  # <--- Додано обробник фото
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler.FILE, handle_photo)
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(CallbackQueryHandler(handle_callback))
     
-    print("🤖 Бот запущений із підтримкою розпізнавання цінників по фото!") 
+    print("🤖 Бот запущений з підтримкою локальних фотографій шин!") 
     app.run_polling()
