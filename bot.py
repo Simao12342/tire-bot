@@ -40,7 +40,7 @@ def log_to_history(user, code, action, old_qty, new_qty):
     """Записує подію зміни залишку на аркуш 'Історія'"""
     try:
         gc = gspread.service_account(filename="credentials.json")
-        spreadsheet = gc.open("шини 2026 (2)")
+        spreadsheet = gc.open("шини 2026")
         
         # Відкриваємо аркуш 'Історія'
         history_sheet = spreadsheet.worksheet("Історія")
