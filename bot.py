@@ -112,7 +112,7 @@ def search_tires(query: str):
 
 # ----------------- ПОШУК ФОТО В ПАПЦІ PHOTO -----------------
 def get_tire_photo(name):
-    photos_dir = "photo"  # ВИПРАВЛЕНО: назва папки тепер точно відповідає GitHub ("photo")
+    photos_dir = "photo"
     if not os.path.exists(photos_dir):
         return None
     
@@ -215,36 +215,42 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"⚠️ Помилка формування статистики: {e}")
 
-# ----------------- ВІДПРАВКА ТОВАРУ З ФОТО -----------------
-async def send_tire_card(update: Update, item):
-    text = (
-        f"📍 Локація / Палета: {item['pallet']}\n"
-        f"• Артикул: {item['code']}\n"
-        f"• Розмір: {item['size']}\n"
-        f"• Назва: {item['name']}\n"
-        f"• Кількість: {item['qty']} шт."
-    )
-    
-    keyboard = [
-        [
-            InlineKeyboardButton("➖ 1", callback_data=f"dec_{item['row_index']}"),
-            InlineKeyboardButton(f"К-сть: {item['qty']}", callback_data=f"set_{item['row_index']}"),
-            InlineKeyboardButton("➕ 1", callback_data=f"inc_{item['row_index']}")
-        ]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    photo_path = get_tire_photo(item['name'])
+# ----------------- ВІДПРАВКА ЗНАЙДЕНИХ ТОВАРІВ -----------------
+async def send_search_results(update: Update, results):
+    if not results:
+        return
+
+    # Спочатку надсилаємо одне фото товару, якщо воно є
+    first_item = results[0]
+    photo_path = get_tire_photo(first_item['name'])
     
     if photo_path and os.path.exists(photo_path):
         with open(photo_path, 'rb') as photo_file:
             await update.message.reply_photo(
                 photo=photo_file,
-                caption=text,
-                parse_mode="Markdown",
-                reply_markup=reply_markup
+                caption=f"📷 **Фото моделі:** {first_item['name']}",
+                parse_mode="Markdown"
             )
-    else:
+
+    # Далі надсилаємо повідомлення по кожній локації окремо
+    for item in results:
+        text = (
+            f"📍 Локація / Палета: {item['pallet']}\n"
+            f"• Артикул: {item['code']}\n"
+            f"• Розмір: {item['size']}\n"
+            f"• Назва: {item['name']}\n"
+            f"• Кількість: {item['qty']} шт."
+        )
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("➖ 1", callback_data=f"dec_{item['row_index']}"),
+                InlineKeyboardButton(f"К-сть: {item['qty']}", callback_data=f"set_{item['row_index']}"),
+                InlineKeyboardButton("➕ 1", callback_data=f"inc_{item['row_index']}")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
         await update.message.reply_text(
             text=text,
             parse_mode="Markdown",
@@ -298,8 +304,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ За запитом «{query}» нічого не знайдено.")
         return
 
-    for item in results:
-        await send_tire_card(update, item)
+    await send_search_results(update, results)
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not OPENAI_API_KEY or OPENAI_API_KEY == "ТВІЙ_OPENAI_API_KEY":
@@ -348,8 +353,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ За артикулом «{extracted_code}» нічого не знайдено.")
             return
 
-        for item in results:
-            await send_tire_card(update, item)
+        await send_search_results(update, results)
             
     except Exception as e:
         await msg.edit_text(f"⚠️ Помилка обробки фото: {e}")
@@ -398,27 +402,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        if query.message.photo:
-            lines = query.message.caption.split("\n") if query.message.caption else []
-            for i, line in enumerate(lines):
-                if line.startswith("• Кількість:"):
-                    lines[i] = f"• Кількість: {new_qty} шт."
-            updated_text = "\n".join(lines)
-            try:
-                await query.edit_message_caption(caption=updated_text, reply_markup=reply_markup)
-            except Exception:
-                pass
-        else:
-            text_content = query.message.text or ""
-            lines = text_content.split("\n")
-            for i, line in enumerate(lines):
-                if line.startswith("• Кількість:"):
-                    lines[i] = f"• Кількість: {new_qty} шт."
-            updated_text = "\n".join(lines)
-            try:
-                await query.edit_message_text(text=updated_text, reply_markup=reply_markup)
-            except Exception:
-                pass
+        text_content = query.message.text or ""
+        lines = text_content.split("\n")
+        for i, line in enumerate(lines):
+            if line.startswith("• Кількість:"):
+                lines[i] = f"• Кількість: {new_qty} шт."
+        updated_text = "\n".join(lines)
+        
+        try:
+            await query.edit_message_text(text=updated_text, reply_markup=reply_markup)
+        except Exception:
+            pass
         
     except Exception as e:
         await query.answer(f"⚠️ Помилка оновлення: {e}", show_alert=True)
@@ -448,8 +442,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ За запитом «{recognized_text}» нічого не знайдено.")
             return
 
-        for item in results:
-            await send_tire_card(update, item)
+        await send_search_results(update, results)
             
     except Exception as e:
         await msg.edit_text(f"⚠️ Помилка розпізнавання голосу: {e}")
@@ -470,5 +463,5 @@ if __name__ == "__main__":
     
     app.add_error_handler(error_handler)
     
-    print("🤖 Бот успішно запущений з підтримкою папки photo!") 
+    print("🤖 Бот успішно запущений!") 
     app.run_polling()
