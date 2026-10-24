@@ -32,7 +32,7 @@ openai.api_key = OPENAI_API_KEY
 def get_worksheet():
     """Підключення до Google Таблиці через сервісний ключ credentials.json"""
     gc = gspread.service_account(filename="credentials.json")
-    spreadsheet = gc.open("шини 2026 (2)")
+    spreadsheet = gc.open("шини 2026")
     return spreadsheet.sheet1  # Перший аркуш таблиці ("Шини")
 
 # ----------------- ФУНКЦІЯ ЛОГУВАННЯ У ЖУРНАЛ -----------------
