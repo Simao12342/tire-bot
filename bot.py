@@ -2,6 +2,7 @@ import os
 import re
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from datetime import datetime
 import pandas as pd
 import gspread
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -31,8 +32,28 @@ openai.api_key = OPENAI_API_KEY
 def get_worksheet():
     """Підключення до Google Таблиці через сервісний ключ credentials.json"""
     gc = gspread.service_account(filename="credentials.json")
-    spreadsheet = gc.open("шини 2026")
-    return spreadsheet.sheet1  # Перший аркуш таблиці
+    spreadsheet = gc.open("шини 2026 (2)")
+    return spreadsheet.sheet1  # Перший аркуш таблиці ("Шини")
+
+# ----------------- ФУНКЦІЯ ЛОГУВАННЯ У ЖУРНАЛ -----------------
+def log_to_history(user, code, action, old_qty, new_qty):
+    """Записує подію зміни залишку на аркуш 'Історія'"""
+    try:
+        gc = gspread.service_account(filename="credentials.json")
+        spreadsheet = gc.open("шини 2026 (2)")
+        
+        # Відкриваємо аркуш 'Історія'
+        history_sheet = spreadsheet.worksheet("Історія")
+        
+        # Формуємо дані про час та користувача
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        username = f"@{user.username}" if user.username else f"{user.first_name} (ID: {user.id})"
+        action_text = "Додано (+1)" if action == "inc" else "Зменшено (-1)"
+        
+        # Додаємо новий рядок із даними в журнал
+        history_sheet.append_row([now, username, str(code), action_text, old_qty, new_qty])
+    except Exception as e:
+        print(f"⚠️ Помилка запису в історію: {e}")
 
 # ----------------- ФУНКЦІЯ ПОШУКУ -----------------
 def search_tires(query: str):
@@ -102,6 +123,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not results:
         await update.message.reply_text(f"❌ За запитом «{query}» нічого не знайдено.")
         return
+
     for item in results:
         text = (
             f"📍 Локація / Палета: {item['pallet']}\n"
@@ -145,10 +167,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             return
             
-        # Записуємо нове значення у Google Таблицю
+        # 1. Записуємо нове значення кількості у головний аркуш Google Таблиці
         sheet.update_cell(row_index, 5, new_qty)
         
-        # Оновлюємо текст повідомлення в Telegram
+        # 2. Отримуємо артикул товару для журналу дій (стовпець B)
+        item_code = sheet.cell(row_index, 2).value
+        
+        # 3. Додаємо факт зміни у файл журналювання ("Історія")
+        log_to_history(query.from_user, item_code, action, current_qty, new_qty)
+        
+        # 4. Оновлюємо текст повідомлення в Telegram
         original_text = query.message.text
         lines = original_text.split("\n")
         for i, line in enumerate(lines):
@@ -156,7 +184,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 lines[i] = f"• Кількість: {new_qty} шт."
         updated_text = "\n".join(lines)
         
-        # Оновлюємо кнопки з новою кількістю
+        # 5. Оновлюємо кнопки з новою кількістю
         keyboard = [
             [
                 InlineKeyboardButton("➖ 1", callback_data=f"dec_{row_index}"),
@@ -228,5 +256,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(CallbackQueryHandler(handle_callback))
     
-    print("🤖 Бот запущений і готовий до роботи з можливістю запису!") 
+    print("🤖 Бот запущений і готовий до роботи з можливістю запису та журналюванням!") 
     app.run_polling()
