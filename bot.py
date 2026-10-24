@@ -36,6 +36,10 @@ def get_worksheet():
     spreadsheet = gc.open("шини 2026")
     return spreadsheet.sheet1  # Перший аркуш таблиці ("Шини")
 
+# ----------------- ГЛОБАЛЬНИЙ ОБРОБНИК ПОМИЛОК -----------------
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    print(f"⚠️ Сталася помилка при обробці оновлення: {context.error}")
+
 # ----------------- ФУНКЦІЯ ЛОГУВАННЯ У ЖУРНАЛ -----------------
 def log_to_history(user, code, action, old_qty, new_qty):
     try:
@@ -108,7 +112,6 @@ def search_tires(query: str):
 
 # ----------------- ПОШУК ФОТО В ПАПЦІ PHOTOS -----------------
 def get_tire_photo(name):
-    """Шукає фото в папці photos за ключовим словом з назви шини"""
     photos_dir = "photos"
     if not os.path.exists(photos_dir):
         return None
@@ -212,7 +215,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"⚠️ Помилка формування статистики: {e}")
 
-# ----------------- УНІВЕРСАЛЬНА ФУНКЦІЯ ВІДПРАВКИ ТОВАРУ З ФОТО -----------------
+# ----------------- ВІДПРАВКА ТОВАРУ З ФОТО -----------------
 async def send_tire_card(update: Update, item):
     text = (
         f"📍 Локація / Палета: {item['pallet']}\n"
@@ -231,7 +234,6 @@ async def send_tire_card(update: Update, item):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    # Шукаємо локальне фото
     photo_path = get_tire_photo(item['name'])
     
     if photo_path and os.path.exists(photo_path):
@@ -252,18 +254,9 @@ async def send_tire_card(update: Update, item):
 # ----------------- ОБРОБНИКИ ТЕЛЕГРАМ -----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 Привіт! Я твій розумний складський бот-помічник для обліку шин 🛞\n\n"
-        "Ось що я вмію робити:\n\n"
-        "🔍 **Пошук товарів:**\n"
-        "• Надсилай текстовий запит (артикул, розмір або назву).\n"
-        "• **Сфотографуй цінник** — я зчитаю 8-значний артикул після «арт.» і надішлю фото та залишки!\n"
-        "• Використовуй **голосові повідомлення**.\n\n"
-        "📊 **Керування залишками:**\n"
-        "• **`➖ 1` / `➕ 1`** та кнопка зміни точної кількості.\n\n"
-        "📈 **Аналітика та звітність:**\n"
-        "• Команда **`/stats`** для перегляду статистики складу!\n\n"
-        "📋 **Аудит та історія:**\n"
-        "• Усі зміни автоматично фіксуються в журналі (`Історія`) у Google Таблиці.",
+        "👋 Привіт! Я твій складський бот-помічник для обліку шин 🛞\n\n"
+        "🔍 **Пошук:** надсилай артикул, текст, голос або сфотографуй цінник!\n"
+        "📈 **Статистика:** використовуй команду `/stats`.",
         parse_mode="Markdown"
     )
 
@@ -275,7 +268,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text_input = update.message.text.strip()
         
         if not text_input.isdigit():
-            await update.message.reply_text("⚠️ Будь ласка, введіть числове значення для кількості:")
+            await update.message.reply_text("⚠️ Введіть числове значення для кількості:")
             user_data["waiting_for_row"] = row_index
             return
             
@@ -289,8 +282,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             item_code = sheet.cell(row_index, 2).value
             
             log_to_history(update.effective_user, item_code, "set", current_qty, new_qty)
-            
-            await update.message.reply_text(f"✅ Успішно встановлено нову кількість: *{new_qty} шт.* (Артикул: {item_code})", parse_mode="Markdown")
+            await update.message.reply_text(f"✅ Встановлено нову кількість: *{new_qty} шт.* (Артикул: {item_code})", parse_mode="Markdown")
         except Exception as e:
             await update.message.reply_text(f"⚠️ Помилка оновлення: {e}")
         return
@@ -333,13 +325,11 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "content": [
                         {
                             "type": "text",
-                            "text": "Знайди на цьому ціннику 8-значний артикул, який знаходиться після слів 'арт.' або 'арт'. Поверни ТІЛЬКИ ці цифри і нічого більше. Якщо не знайдеш, поверни 0."
+                            "text": "Знайди на цьому ціннику 8-значний артикул після слів 'арт.' або 'арт'. Поверни ТІЛЬКИ ці цифри і нічого більше. Якщо немає, поверни 0."
                         },
                         {
                             "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{base64_image}"
-                            }
+                            "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
                         }
                     ]
                 }
@@ -347,15 +337,15 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             max_tokens=20
         )
         
-        extracted_code = response.choices.message.content.strip()
-        await msg.edit_text(f"🏷 Розпізнано артикул з цінника: *{extracted_code}*", parse_mode="Markdown")
+        extracted_code = response.choices[0].message.content.strip()
+        await msg.edit_text(f"🏷 Розпізнано артикул: *{extracted_code}*", parse_mode="Markdown")
         
         results = search_tires(extracted_code)
         if isinstance(results, str):
             await update.message.reply_text(results)
             return
         if not results:
-            await update.message.reply_text(f"❌ За артикулом «{extracted_code}» нічого не знайдено в таблиці.")
+            await update.message.reply_text(f"❌ За артикулом «{extracted_code}» нічого не знайдено.")
             return
 
         for item in results:
@@ -372,12 +362,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     
     data = query.data
-    action, row_index_str = data.split("_")
+    parts = data.split("_")
+    if len(parts) != 2:
+        return
+    action, row_index_str = parts
     row_index = int(row_index_str)
     
     if action == "set":
         context.user_data["waiting_for_row"] = row_index
-        await query.message.reply_text("⌨️ Будь ласка, надішліть у чат **нову точну кількість** (тільки число) для цього товару:")
+        await query.message.reply_text("⌨️ Надішліть у чат **нову точну кількість** (тільки число) для цього товару:")
         return
 
     try:
@@ -396,7 +389,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         item_code = sheet.cell(row_index, 2).value
         log_to_history(query.from_user, item_code, action, current_qty, new_qty)
         
-        # Оновлюємо текст повідомлення (якщо це був текстовий підпис під фото, використовуємо caption)
         keyboard = [
             [
                 InlineKeyboardButton("➖ 1", callback_data=f"dec_{row_index}"),
@@ -406,27 +398,35 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        if query.message.caption:
-            lines = query.message.caption.split("\n")
+        # Безпечне оновлення залежно від того, чи є в повідомленні фото
+        if query.message.photo:
+            lines = query.message.caption.split("\n") if query.message.caption else []
             for i, line in enumerate(lines):
                 if line.startswith("• Кількість:"):
                     lines[i] = f"• Кількість: {new_qty} шт."
             updated_text = "\n".join(lines)
-            await query.edit_message_caption(caption=updated_text, reply_markup=reply_markup)
+            try:
+                await query.edit_message_caption(caption=updated_text, reply_markup=reply_markup)
+            except Exception:
+                pass
         else:
-            lines = query.message.text.split("\n")
+            text_content = query.message.text or ""
+            lines = text_content.split("\n")
             for i, line in enumerate(lines):
                 if line.startswith("• Кількість:"):
                     lines[i] = f"• Кількість: {new_qty} шт."
             updated_text = "\n".join(lines)
-            await query.edit_message_text(text=updated_text, reply_markup=reply_markup)
+            try:
+                await query.edit_message_text(text=updated_text, reply_markup=reply_markup)
+            except Exception:
+                pass
         
     except Exception as e:
         await query.answer(f"⚠️ Помилка оновлення: {e}", show_alert=True)
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not OPENAI_API_KEY or OPENAI_API_KEY == "ТВІЙ_OPENAI_API_KEY":
-        await update.message.reply_text("⚠️ Голосовий пошук наразі не налаштовано.")
+        await update.message.reply_text("⚠️ Голосовий пошук не налаштовано.")
         return
 
     msg = await update.message.reply_text("🎙 Розпізнаю голосове повідомлення...")
@@ -469,5 +469,8 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(CallbackQueryHandler(handle_callback))
     
-    print("🤖 Бот запущений з підтримкою локальних фотографій шин!") 
+    # Реєстрація обробника помилок, щоб логі були чистими
+    app.add_error_handler(error_handler)
+    
+    print("🤖 Бот успішно запущений!") 
     app.run_polling()
