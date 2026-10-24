@@ -3,8 +3,9 @@ import re
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import pandas as pd
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+import gspread
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 import openai
 
 # ----------------- ФОНОВИЙ ВЕБ-СЕРВЕР ДЛЯ RENDER -----------------
@@ -19,80 +20,159 @@ def run_health_check_server():
     server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
     server.serve_forever()
 
-# Запускаємо сервер у фоновому потоці для Render
 threading.Thread(target=run_health_check_server, daemon=True).start()
 
 # ----------------- НАЛАШТУВАННЯ -----------------
 TELEGRAM_BOT_TOKEN = "8767386740:AAG_vZSBP-duKwFR_YYgSN-Yr7ia39rSw6c"
 OPENAI_API_KEY = "ТВІЙ_OPENAI_API_KEY"  
 
-# ВСТАВТЕ СЮДИ ПОСИЛАННЯ НА ОПУБЛІКОВАНИЙ CSV З GOOGLE ТАБЛИЦІ:
-GOOGLE_SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vT07yymF_cQqHWn64-sW4fVFJee_YKcvWNRtkY07aheMSOAxIXrd1TvXfmSr3TK3A/pub?gid=1510969474&single=true&output=csv"
-
 openai.api_key = OPENAI_API_KEY
 
-def load_data():
-    """Завантаження та очищення даних безпосередньо з Google Таблиці"""
-    # Читаємо актуальну CSV-версію прямо з інтернету
-    df = pd.read_csv(GOOGLE_SHEET_CSV_URL, skiprows=2)
-    df.columns = ["pallet", "code", "size", "name", "qty"]
-    df = df.dropna(subset=["code"])
-    df["code"] = df["code"].astype(str).str.replace(".0", "", regex=False).str.strip()
-    return df
+def get_worksheet():
+    """Підключення до Google Таблиці через сервісний ключ credentials.json"""
+    gc = gspread.service_account(filename="credentials.json")
+    spreadsheet = gc.open("шини 2026")
+    return spreadsheet.sheet1  # Перший аркуш таблиці
 
 # ----------------- ФУНКЦІЯ ПОШУКУ -----------------
-def search_tires(query: str) -> str:
+def search_tires(query: str):
     try:
-        df = load_data()
+        sheet = get_worksheet()
+        data = sheet.get_all_values()
+        rows = data[3:]  # Дані починаються з 4-го рядка
+        
+        df = pd.DataFrame(rows, columns=["pallet", "code", "size", "name", "qty"])
+        df = df.dropna(subset=["code"])
+        df["code"] = df["code"].astype(str).str.replace(".0", "", regex=False).str.strip()
     except Exception as e:
         return f"⚠️ Помилка завантаження даних з Google Таблиці: {e}"
 
     query_clean = query.strip().lower()
+    results = []
     
-    # Пошук за кодом (артикулом), розміром або назвою
-    results = df[
-        df["code"].str.lower().str.contains(query_clean) |
-        df["size"].astype(str).str.lower().str.contains(query_clean) |
-        df["name"].astype(str).str.lower().str.contains(query_clean)
-    ]
-    
-    if results.empty:
+    for idx, row in df.iterrows():
+        code_str = str(row["code"]).lower()
+        size_str = str(row["size"]).lower()
+        name_str = str(row["name"]).lower()
+        
+        if query_clean in code_str or query_clean in size_str or query_clean in name_str:
+            sheet_row_index = idx + 4  # Реальний номер рядка в Google Таблиці
+            results.append({
+                "row_index": sheet_row_index,
+                "pallet": row["pallet"],
+                "code": row["code"],
+                "size": row["size"],
+                "name": row["name"],
+                "qty": row["qty"]
+            })
+            
+    if not results:
         digits_only = re.sub(r"\D", "", query_clean)
         if len(digits_only) >= 4:
-            results = df[df["code"].str.contains(digits_only)]
-            
-    if results.empty:
-        return f"❌ За запитом «{query}» нічого не знайдено."
-    
-    text = f"🔍 Результати пошуку за запитом: *{query}*\n\n"
-    for _, row in results.iterrows():
-        pallet_info = row['pallet']
-        text += (
-            f"📍 Локація / Палета: {pallet_info}\n"
-            f"• Артикул: {row['code']}\n"
-            f"• Розмір: {row['size']}\n"
-            f"• Назва: {row['name']}\n"
-            f"• Кількість: {row['qty']} шт.\n"
-            f"-----------------------------------\n"
-        )
-    return text
+            for idx, row in df.iterrows():
+                if digits_only in str(row["code"]):
+                    sheet_row_index = idx + 4
+                    results.append({
+                        "row_index": sheet_row_index,
+                        "pallet": row["pallet"],
+                        "code": row["code"],
+                        "size": row["size"],
+                        "name": row["name"],
+                        "qty": row["qty"]
+                    })
+                    
+    return results
 
 # ----------------- ОБРОБНИКИ ТЕЛЕГРАМ -----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Привіт! Я твій складський бот-помічник 🛞\n\n"
         "Надішли мені артикул, розмір або назву шини, "
-        "і я підкажу, де вона лежить!"
+        "і я покажу залишки з можливістю їх редагування!"
     )
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text
-    response = search_tires(query)
-    await update.message.reply_markdown(response)
+    results = search_tires(query)
+    
+    if isinstance(results, str):
+        await update.message.reply_text(results)
+        return
+        
+    if not results:
+        await update.message.reply_text(f"❌ За запитом «{query}» нічого не знайдено.")
+        return
+    for item in results:
+        text = (
+            f"📍 Локація / Палета: {item['pallet']}\n"
+            f"• Артикул: {item['code']}\n"
+            f"• Розмір: {item['size']}\n"
+            f"• Назва: {item['name']}\n"
+            f"• Кількість: {item['qty']} шт."
+        )
+        
+        # Кнопки керування залишками (+1 / -1)
+        keyboard = [
+            [
+                InlineKeyboardButton("➖ 1", callback_data=f"dec_{item['row_index']}"),
+                InlineKeyboardButton(f"К-сть: {item['qty']}", callback_data=f"info_{item['row_index']}"),
+                InlineKeyboardButton("➕ 1", callback_data=f"inc_{item['row_index']}")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(text, reply_markup=reply_markup)
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data
+    action, row_index_str = data.split("_")
+    row_index = int(row_index_str)
+    
+    if action == "info":
+        return
+
+    try:
+        sheet = get_worksheet()
+        current_qty_str = sheet.cell(row_index, 5).value  # Стовпець E — кількість
+        current_qty = int(current_qty_str) if current_qty_str and str(current_qty_str).isdigit() else 0
+        
+        if action == "inc":
+            new_qty = current_qty + 1
+        elif action == "dec":
+            new_qty = max(0, current_qty - 1)
+        else:
+            return
+            
+        # Записуємо нове значення у Google Таблицю
+        sheet.update_cell(row_index, 5, new_qty)
+        
+        # Оновлюємо текст повідомлення в Telegram
+        original_text = query.message.text
+        lines = original_text.split("\n")
+        for i, line in enumerate(lines):
+            if line.startswith("• Кількість:"):
+                lines[i] = f"• Кількість: {new_qty} шт."
+        updated_text = "\n".join(lines)
+        
+        # Оновлюємо кнопки з новою кількістю
+        keyboard = [
+            [
+                InlineKeyboardButton("➖ 1", callback_data=f"dec_{row_index}"),
+                InlineKeyboardButton(f"К-сть: {new_qty}", callback_data=f"info_{row_index}"),
+                InlineKeyboardButton("➕ 1", callback_data=f"inc_{row_index}")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(text=updated_text, reply_markup=reply_markup)
+        
+    except Exception as e:
+        await query.answer(f"⚠️ Помилка оновлення: {e}", show_alert=True)
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not OPENAI_API_KEY or OPENAI_API_KEY == "ТВІЙ_OPENAI_API_KEY":
-        await update.message.reply_text("⚠️ Голосовий пошук наразі не налаштовано. Будь ласка, пишіть текстові запити.")
+        await update.message.reply_text("⚠️ Голосовий пошук наразі не налаштовано.")
         return
 
     msg = await update.message.reply_text("🎙 Розпізнаю голосове повідомлення...")
@@ -107,8 +187,32 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         recognized_text = transcript["text"]
         await msg.edit_text(f"🗣 Розпізнано: *«{recognized_text}»*", parse_mode="Markdown")
         
-        response = search_tires(recognized_text)
-        await update.message.reply_markdown(response)
+        results = search_tires(recognized_text)
+        if isinstance(results, str):
+            await update.message.reply_text(results)
+            return
+        if not results:
+            await update.message.reply_text(f"❌ За запитом «{recognized_text}» нічого не знайдено.")
+            return
+
+        for item in results:
+            text = (
+                f"📍 Локація / Палета: {item['pallet']}\n"
+                f"• Артикул: {item['code']}\n"
+                f"• Розмір: {item['size']}\n"
+                f"• Назва: {item['name']}\n"
+                f"• Кількість: {item['qty']} шт."
+            )
+            keyboard = [
+                [
+                    InlineKeyboardButton("➖ 1", callback_data=f"dec_{item['row_index']}"),
+                    InlineKeyboardButton(f"К-сть: {item['qty']}", callback_data=f"info_{item['row_index']}"),
+                    InlineKeyboardButton("➕ 1", callback_data=f"inc_{item['row_index']}")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text(text, reply_markup=reply_markup)
+            
     except Exception as e:
         await msg.edit_text(f"⚠️ Помилка розпізнавання голосу: {e}")
     finally:
@@ -116,13 +220,13 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             os.remove(file_path)
 
 # ----------------- ЗАПУСК -----------------
-if __name__ == "__main__":
+if name == "main":
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
+    app.add_handler(CallbackQueryHandler(handle_callback))
     
-    print("🤖 Бот запущений і готовий до роботи!") 
+    print("🤖 Бот запущений і готовий до роботи з можливістю запису!") 
     app.run_polling()
-    
