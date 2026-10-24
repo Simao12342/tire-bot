@@ -48,7 +48,13 @@ def log_to_history(user, code, action, old_qty, new_qty):
         # Формуємо дані про час та користувача
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         username = f"@{user.username}" if user.username else f"{user.first_name} (ID: {user.id})"
-        action_text = "Додано (+1)" if action == "inc" else "Зменшено (-1)"
+        
+        if action == "inc":
+            action_text = "Додано (+1)"
+        elif action == "dec":
+            action_text = "Зменшено (-1)"
+        else:
+            action_text = "Встановлено точну кількість"
         
         # Додаємо новий рядок із даними в журнал
         history_sheet.append_row([now, username, str(code), action_text, old_qty, new_qty])
@@ -113,6 +119,37 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_data = context.user_data
+    
+    # Якщо користувач натиснув кнопку введення точної кількості і тепер пише число:
+    if "waiting_for_row" in user_data:
+        row_index = user_data.pop("waiting_for_row")
+        text_input = update.message.text.strip()
+        
+        if not text_input.isdigit():
+            await update.message.reply_text("⚠️ Будь ласка, введіть числове значення для кількості:")
+            user_data["waiting_for_row"] = row_index  # Повертаємо стан очікування
+            return
+            
+        new_qty = int(text_input)
+        try:
+            sheet = get_worksheet()
+            current_qty_str = sheet.cell(row_index, 5).value
+            current_qty = int(current_qty_str) if current_qty_str and str(current_qty_str).isdigit() else 0
+            
+            # Оновлюємо значення в таблиці
+            sheet.update_cell(row_index, 5, new_qty)
+            item_code = sheet.cell(row_index, 2).value
+            
+            # Записуємо в історію
+            log_to_history(update.effective_user, item_code, "set", current_qty, new_qty)
+            
+            await update.message.reply_text(f"✅ Успішно встановлено нову кількість: *{new_qty} шт.* (Артикул: {item_code})", parse_mode="Markdown")
+        except Exception as e:
+            await update.message.reply_text(f"⚠️ Помилка оновлення: {e}")
+        return
+
+    # Звичайний текстовий пошук шин
     query = update.message.text
     results = search_tires(query)
     
@@ -133,11 +170,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• Кількість: {item['qty']} шт."
         )
         
-        # Кнопки керування залишками (+1 / -1)
+        # Кнопки керування: -1, Точне введення (по центру), +1
         keyboard = [
             [
                 InlineKeyboardButton("➖ 1", callback_data=f"dec_{item['row_index']}"),
-                InlineKeyboardButton(f"К-сть: {item['qty']}", callback_data=f"info_{item['row_index']}"),
+                InlineKeyboardButton(f"К-сть: {item['qty']}", callback_data=f"set_{item['row_index']}"),
                 InlineKeyboardButton("➕ 1", callback_data=f"inc_{item['row_index']}")
             ]
         ]
@@ -152,7 +189,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     action, row_index_str = data.split("_")
     row_index = int(row_index_str)
     
-    if action == "info":
+    # Якщо клікнули на центральну кнопку з кількістю — активуємо режим введення точної кількості
+    if action == "set":
+        context.user_data["waiting_for_row"] = row_index
+        await query.message.reply_text("⌨️ Будь ласка, надішліть у чат **нову точну кількість** (тільки число) для цього товару:")
         return
 
     try:
@@ -167,7 +207,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             return
             
-        # 1. Записуємо нове значення кількості у головний аркуш Google Таблиці
+        # 1. Записуємо нове значення у головний аркуш Google Таблиці
         sheet.update_cell(row_index, 5, new_qty)
         
         # 2. Отримуємо артикул товару для журналу дій (стовпець B)
@@ -188,7 +228,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [
             [
                 InlineKeyboardButton("➖ 1", callback_data=f"dec_{row_index}"),
-                InlineKeyboardButton(f"К-сть: {new_qty}", callback_data=f"info_{row_index}"),
+                InlineKeyboardButton(f"К-сть: {new_qty}", callback_data=f"set_{row_index}"),
                 InlineKeyboardButton("➕ 1", callback_data=f"inc_{row_index}")
             ]
         ]
@@ -234,7 +274,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard = [
                 [
                     InlineKeyboardButton("➖ 1", callback_data=f"dec_{item['row_index']}"),
-                    InlineKeyboardButton(f"К-сть: {item['qty']}", callback_data=f"info_{item['row_index']}"),
+                    InlineKeyboardButton(f"К-сть: {item['qty']}", callback_data=f"set_{item['row_index']}"),
                     InlineKeyboardButton("➕ 1", callback_data=f"inc_{item['row_index']}")
                 ]
             ]
@@ -256,5 +296,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(CallbackQueryHandler(handle_callback))
     
-    print("🤖 Бот запущений і готовий до роботи з можливістю запису та журналюванням!") 
+    print("🤖 Бот запущений і готовий до роботи!") 
     app.run_polling()
