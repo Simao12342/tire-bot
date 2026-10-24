@@ -123,5 +123,6 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     
-    print("🤖 Бот запущений і готовий до роботи!")
+    print("🤖 Бот запущений і готовий до роботи!") 
     app.run_polling()
+    
