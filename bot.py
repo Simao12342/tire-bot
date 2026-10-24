@@ -453,7 +453,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_tire_card(update, item)
             
     except Exception as e:
-        await msg.edit_text(f5"⚠️ Помилка розпізнавання голосу: {e}")
+        await msg.edit_text(f"⚠️ Помилка розпізнавання голосу: {e}")
     finally:
         if os.path.exists(file_path):
             os.remove(file_path)
