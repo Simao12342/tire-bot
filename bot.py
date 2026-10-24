@@ -1,6 +1,7 @@
 import os
 import re
 import threading
+import base64
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
 import pandas as pd
@@ -112,18 +113,16 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         sheet = get_worksheet()
         data = sheet.get_all_values()
-        rows = data[3:]  # Дані з 4-го рядка
+        rows = data[3:]
         
         df = pd.DataFrame(rows, columns=["pallet", "code", "size", "name", "qty"])
         df = df.dropna(subset=["code"])
         df["qty"] = pd.to_numeric(df["qty"], errors="coerce").fillna(0)
         
-        # 1. Загальні показники
         total_positions = len(df)
         total_qty = int(df["qty"].sum())
         zero_qty = len(df[df["qty"] == 0])
         
-        # 2. Сезонність
         def get_season(name):
             n = str(name).lower()
             if any(w in n for w in ["зим", "зима", "winter", "шип"]):
@@ -137,7 +136,6 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         df["season"] = df["name"].apply(get_season)
         season_stats = df.groupby("season")["qty"].sum().to_dict()
         
-        # 3. Радіус
         def get_radius(size_str):
             match = re.search(r'R\d+', str(size_str), re.IGNORECASE)
             return match.group(0).upper() if match else "Інші"
@@ -145,7 +143,6 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         df["radius"] = df["size"].apply(get_radius)
         radius_stats = df.groupby("radius")["qty"].sum().to_dict()
         
-        # 4. Виробник
         brands = [
             "Premiori", "Rosava", "Bridgestone", "Michelin", "Nokian", "Hankook", 
             "Continental", "Goodyear", "Matador", "Barum", "Cordiant", "Tigar", 
@@ -169,11 +166,9 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         df["brand"] = df["name"].apply(get_brand)
         brand_stats = df.groupby("brand")["qty"].sum().to_dict()
         
-        # 5. Виробник і розмір
         brand_size_df = df.groupby(["brand", "radius"])["qty"].sum().reset_index()
         brand_size_df = brand_size_df[brand_size_df["qty"] > 0].sort_values(by="qty", ascending=False)
         
-        # Формуємо текст звіту
         text = (
             "📊 **Зведена статистика складу шин**\n\n"
             f"📦 **Загалом на складі:** {total_qty} шт. ({total_positions} позицій)\n"
@@ -211,15 +206,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Ось що я вмію робити:\n\n"
         "🔍 **Пошук товарів:**\n"
         "• Надсилай текстовий запит (артикул, розмір або назву).\n"
-        "• Або використовуй **голосові повідомлення**.\n\n"
+        "• **Сфотографуй цінник** — я автоматично зчитаю 8-значний артикул після «арт.»!\n"
+        "• Використовуй **голосові повідомлення**.\n\n"
         "📊 **Керування залишками:**\n"
         "• **`➖ 1` / `➕ 1`** — швидка зміна кількості кнопками.\n"
         "• **`К-сть: X`** — натисни на центральну кнопку, щоб ввести точне число в чаті.\n\n"
         "📈 **Аналітика та звітність:**\n"
-        "• Використовуй команду **`/stats`**, щоб отримати повну статистику складу по кількості, сезонності, радіусах та виробниках!\n\n"
+        "• Команда **`/stats`** для перегляду статистики складу!\n\n"
         "📋 **Аудит та історія:**\n"
         "• Усі зміни автоматично фіксуються в журналі (`Історія`) у Google Таблиці.\n\n"
-        "👇 **Надішли мені артикул або натисни `/stats` для перегляду звіту!**",
+        "👇 **Сфотографуй цінник або надішли запит, щоб почати!**",
         parse_mode="Markdown"
     )
 
@@ -280,6 +276,84 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(text, reply_markup=reply_markup)
+
+# ----------------- ОБРОБНИК ФОТО (РОЗПІЗНАВАННЯ АРТИКУЛА З ЦІННИКА) -----------------
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not OPENAI_API_KEY or OPENAI_API_KEY == "ТВІЙ_OPENAI_API_KEY":
+        await update.message.reply_text("⚠️ OpenAI API ключ не налаштовано для розпізнавання фото.")
+        return
+
+    msg = await update.message.reply_text("🔍 Аналізую цінник і шукаю артикул...")
+    
+    # Завантажуємо фото від користувача
+    photo_file = await update.message.photo[-1].get_file()
+    file_path = "photo.jpg"
+    await photo_file.download_to_drive(file_path)
+    
+    try:
+        # Кодуємо картинку в base64
+        with open(file_path, "rb") as image_file:
+            base64_image = base64.b64encode(image_file.read()).decode('utf-8')
+            
+        # Звертаємося до OpenAI Vision API (gpt-4o-mini)
+        client = openai.OpenAI(api_key=OPENAI_API_KEY)
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Знайди на цьому ціннику 8-значний артикул, який знаходиться після слів 'арт.' або 'арт'. Поверни ТІЛЬКИ ці цифри і нічого більше. Якщо не знайдеш, поверни 0."
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_image}"
+                            }
+                        }
+                    ]
+                }
+            ],
+            max_tokens=20
+        )
+        
+        extracted_code = response.choices.message.content.strip()
+        await msg.edit_text(f"🏷 Розпізнано артикул з цінника: *{extracted_code}*", parse_mode="Markdown")
+        
+        # Шукаємо товар у таблиці за розпізнаним артикулом
+        results = search_tires(extracted_code)
+        if isinstance(results, str):
+            await update.message.reply_text(results)
+            return
+        if not results:
+            await update.message.reply_text(f"❌ За артикулом «{extracted_code}» нічого не знайдено в таблиці.")
+            return
+
+        for item in results:
+            text = (
+                f"📍 Локація / Палета: {item['pallet']}\n"
+                f"• Артикул: {item['code']}\n"
+                f"• Розмір: {item['size']}\n"
+                f"• Назва: {item['name']}\n"
+                f"• Кількість: {item['qty']} шт."
+            )
+            keyboard = [
+                [
+                    InlineKeyboardButton("➖ 1", callback_data=f"dec_{item['row_index']}"),
+                    InlineKeyboardButton(f"К-сть: {item['qty']}", callback_data=f"set_{item['row_index']}"),
+                    InlineKeyboardButton("➕ 1", callback_data=f"inc_{item['row_index']}")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text(text, reply_markup=reply_markup)
+            
+    except Exception as e:
+        await msg.edit_text(f"⚠️ Помилка обробки фото: {e}")
+    finally:
+        if os.path.exists(file_path):
+            os.remove(file_path)
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -366,7 +440,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard = [
                 [
                     InlineKeyboardButton("➖ 1", callback_data=f"dec_{item['row_index']}"),
-                    InlineKeyboardButton(f"К-сть: {item['qty']}", callback_data=f"set_{item['row_index']}"),
+                    InlineKeyboardButton(f"К-сть: {item['qty']}", callback_data=f"info_{item['row_index']}"),
                     InlineKeyboardButton("➕ 1", callback_data=f"inc_{item['row_index']}")
                 ]
             ]
@@ -386,9 +460,9 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))  # <--- Додано обробник фото
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(CallbackQueryHandler(handle_callback))
     
-    print("🤖 Бот запущений і готовий до роботи зі статистикою!") 
+    print("🤖 Бот запущений із підтримкою розпізнавання цінників по фото!") 
     app.run_polling()
-        
