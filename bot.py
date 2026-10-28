@@ -54,6 +54,8 @@ def log_to_history(user, code, action, old_qty, new_qty):
             action_text = "Додано (+1)"
         elif action == "dec":
             action_text = "Зменшено (-1)"
+        elif action == "add_new":
+            action_text = "Створено новий рядок"
         else:
             action_text = "Встановлено точну кількість"
         
@@ -109,6 +111,43 @@ def search_tires(query: str):
                     })
                     
     return results
+
+# ----------------- ФУНКЦІЯ ДОДАВАННЯ НОВОГО ТОВАРУ -----------------
+def add_tire_to_sheet(pallet: str, code: str, qty: int):
+    try:
+        sheet = get_worksheet()
+        data = sheet.get_all_values()
+        rows = data[3:]
+        
+        df = pd.DataFrame(rows, columns=["pallet", "code", "size", "name", "qty"])
+        df["code_clean"] = df["code"].astype(str).str.replace(".0", "", regex=False).str.strip()
+        
+        target_code = str(code).strip()
+        matched_rows = df[df["code_clean"] == target_code]
+        
+        if matched_rows.empty:
+            # Спроба знайти збіг за останніми цифрами
+            matched_rows = df[df["code_clean"].str.contains(target_code)]
+            
+        if matched_rows.empty:
+            return None, f"❌ Артикул `{code}` не знайдено у записаних позиціях таблиці."
+            
+        found_item = matched_rows.iloc[0]
+        size = found_item["size"]
+        name = found_item["name"]
+        
+        new_row = [str(pallet), str(target_code), str(size), str(name), int(qty)]
+        sheet.append_row(new_row)
+        
+        return {
+            "pallet": pallet,
+            "code": target_code,
+            "size": size,
+            "name": name,
+            "qty": qty
+        }, None
+    except Exception as e:
+        return None, f"⚠️ Помилка виконання запису у Google Таблицю: {e}"
 
 # ----------------- ПОШУК ФОТО В ПАПЦІ PHOTO -----------------
 def get_tire_photo(name):
@@ -215,12 +254,52 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"⚠️ Помилка формування статистики: {e}")
 
+# ----------------- КОМАНДА /ADD -----------------
+async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    raw_args = " ".join(context.args).strip() if context.args else ""
+    if not raw_args:
+        await update.message.reply_text(
+            "⚠️ **Формат команди /add:**\n"
+            "`/add [палета] [артикул] [кількість]`\n\n"
+            "Приклад: `/add 4 40745335 8` або `/add 4, 40745335, 8`",
+            parse_mode="Markdown"
+        )
+        return
+
+    tokens = [t.strip() for t in re.split(r'[\s,]+', raw_args) if t.strip()]
+    if len(tokens) < 3:
+        await update.message.reply_text("⚠️ Введіть 3 параметри: палету, артикул та кількість.")
+        return
+
+    pallet, code, qty_str = tokens[0], tokens[1], tokens[2]
+    if not qty_str.isdigit():
+        await update.message.reply_text("⚠️ Кількість повинна бути числом.")
+        return
+
+    qty = int(qty_str)
+    item_data, err = add_tire_to_sheet(pallet, code, qty)
+    
+    if err:
+        await update.message.reply_text(err, parse_mode="Markdown")
+        return
+
+    log_to_history(update.effective_user, item_data["code"], "add_new", 0, qty)
+    
+    text = (
+        f"✅ **Позицію успішно додано!**\n\n"
+        f"📍 Локація / Палета: **{item_data['pallet']}**\n"
+        f"• Артикул: `{item_data['code']}`\n"
+        f"• Розмір: {item_data['size']}\n"
+        f"• Назва: {item_data['name']}\n"
+        f"• Кількість: **{item_data['qty']} шт.**"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
+
 # ----------------- ВІДПРАВКА ЗНАЙДЕНИХ ТОВАРІВ -----------------
 async def send_search_results(update: Update, results):
     if not results:
         return
 
-    # Спочатку надсилаємо одне фото товару, якщо воно є
     first_item = results[0]
     photo_path = get_tire_photo(first_item['name'])
     
@@ -232,7 +311,6 @@ async def send_search_results(update: Update, results):
                 parse_mode="Markdown"
             )
 
-    # Далі надсилаємо повідомлення по кожній локації окремо
     for item in results:
         text = (
             f"📍 Локація / Палета: {item['pallet']}\n"
@@ -262,16 +340,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Привіт! Я твій складський бот-помічник для обліку шин 🛞\n\n"
         "🔍 **Пошук:** надсилай артикул, текст, голос або сфотографуй цінник!\n"
+        "➕ **Швидке додавання:** надсилай `+ 4 40745335 8` або використовуй `/add 4 40745335 8`\n"
         "📈 **Статистика:** використовуй команду `/stats`.",
         parse_mode="Markdown"
     )
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data = context.user_data
-    
+    text_input = update.message.text.strip()
+
+    # Обробка введення точної кількості після натискання кнопки "К-сть"
     if "waiting_for_row" in user_data:
         row_index = user_data.pop("waiting_for_row")
-        text_input = update.message.text.strip()
         
         if not text_input.isdigit():
             await update.message.reply_text("⚠️ Введіть числове значення для кількості:")
@@ -293,7 +373,34 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"⚠️ Помилка оновлення: {e}")
         return
 
-    query = update.message.text
+    # Перевірка на шорткат типу "+ 4 40745335 8" або "+ 4, 40745335, 8"
+    if text_input.startswith("+"):
+        args_text = text_input[1:].strip()
+        tokens = [t.strip() for t in re.split(r'[\s,]+', args_text) if t.strip()]
+        
+        if len(tokens) >= 3 and tokens[2].isdigit():
+            pallet, code, qty = tokens[0], tokens[1], int(tokens[2])
+            item_data, err = add_tire_to_sheet(pallet, code, qty)
+            
+            if err:
+                await update.message.reply_text(err, parse_mode="Markdown")
+                return
+
+            log_to_history(update.effective_user, item_data["code"], "add_new", 0, qty)
+            
+            reply_text = (
+                f"✅ **Позицію успішно додано!**\n\n"
+                f"📍 Локація / Палета: **{item_data['pallet']}**\n"
+                f"• Артикул: `{item_data['code']}`\n"
+                f"• Розмір: {item_data['size']}\n"
+                f"• Назва: {item_data['name']}\n"
+                f"• Кількість: **{item_data['qty']} шт.**"
+            )
+            await update.message.reply_text(reply_text, parse_mode="Markdown")
+            return
+
+    # Звичайний пошук
+    query = text_input
     results = search_tires(query)
     
     if isinstance(results, str):
@@ -323,145 +430,4 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         client = openai.OpenAI(api_key=OPENAI_API_KEY)
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": "Знайди на цьому ціннику 8-значний артикул після слів 'арт.' або 'арт'. Поверни ТІЛЬКИ ці цифри і нічого більше. Якщо немає, поверни 0."
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
-                        }
-                    ]
-                }
-            ],
-            max_tokens=20
-        )
-        
-        extracted_code = response.choices[0].message.content.strip()
-        await msg.edit_text(f"🏷 Розпізнано артикул: *{extracted_code}*", parse_mode="Markdown")
-        
-        results = search_tires(extracted_code)
-        if isinstance(results, str):
-            await update.message.reply_text(results)
-            return
-        if not results:
-            await update.message.reply_text(f"❌ За артикулом «{extracted_code}» нічого не знайдено.")
-            return
-
-        await send_search_results(update, results)
-            
-    except Exception as e:
-        await msg.edit_text(f"⚠️ Помилка обробки фото: {e}")
-    finally:
-        if os.path.exists(file_path):
-            os.remove(file_path)
-
-async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    data = query.data
-    parts = data.split("_")
-    if len(parts) != 2:
-        return
-    action, row_index_str = parts
-    row_index = int(row_index_str)
-    
-    if action == "set":
-        context.user_data["waiting_for_row"] = row_index
-        await query.message.reply_text("⌨️ Надішліть у чат **нову точну кількість** (тільки число) для цього товару:")
-        return
-
-    try:
-        sheet = get_worksheet()
-        current_qty_str = sheet.cell(row_index, 5).value
-        current_qty = int(current_qty_str) if current_qty_str and str(current_qty_str).isdigit() else 0
-        
-        if action == "inc":
-            new_qty = current_qty + 1
-        elif action == "dec":
-            new_qty = max(0, current_qty - 1)
-        else:
-            return
-            
-        sheet.update_cell(row_index, 5, new_qty)
-        item_code = sheet.cell(row_index, 2).value
-        log_to_history(query.from_user, item_code, action, current_qty, new_qty)
-        
-        keyboard = [
-            [
-                InlineKeyboardButton("➖ 1", callback_data=f"dec_{row_index}"),
-                InlineKeyboardButton(f"К-сть: {new_qty}", callback_data=f"set_{row_index}"),
-                InlineKeyboardButton("➕ 1", callback_data=f"inc_{row_index}")
-            ]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        text_content = query.message.text or ""
-        lines = text_content.split("\n")
-        for i, line in enumerate(lines):
-            if line.startswith("• Кількість:"):
-                lines[i] = f"• Кількість: {new_qty} шт."
-        updated_text = "\n".join(lines)
-        
-        try:
-            await query.edit_message_text(text=updated_text, reply_markup=reply_markup)
-        except Exception:
-            pass
-        
-    except Exception as e:
-        await query.answer(f"⚠️ Помилка оновлення: {e}", show_alert=True)
-
-async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not OPENAI_API_KEY or OPENAI_API_KEY == "ТВІЙ_OPENAI_API_KEY":
-        await update.message.reply_text("⚠️ Голосовий пошук не налаштовано.")
-        return
-
-    msg = await update.message.reply_text("🎙 Розпізнаю голосове повідомлення...")
-    voice_file = await context.bot.get_file(update.message.voice.file_id)
-    file_path = "voice.ogg"
-    await voice_file.download_to_drive(file_path)
-    
-    try:
-        with open(file_path, "rb") as audio:
-            transcript = openai.Audio.transcribe("whisper-1", audio, language="uk")
-        
-        recognized_text = transcript["text"]
-        await msg.edit_text(f"🗣 Розпізнано: *«{recognized_text}»*", parse_mode="Markdown")
-        
-        results = search_tires(recognized_text)
-        if isinstance(results, str):
-            await update.message.reply_text(results)
-            return
-        if not results:
-            await update.message.reply_text(f"❌ За запитом «{recognized_text}» нічого не знайдено.")
-            return
-
-        await send_search_results(update, results)
-            
-    except Exception as e:
-        await msg.edit_text(f"⚠️ Помилка розпізнавання голосу: {e}")
-    finally:
-        if os.path.exists(file_path):
-            os.remove(file_path)
-
-# ----------------- ЗАПУСК -----------------
-if __name__ == "__main__":
-    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-    
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("stats", stats_command))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
-    app.add_handler(CallbackQueryHandler(handle_callback))
-    
-    app.add_error_handler(error_handler)
-    
-    print("🤖 Бот успішно запущений!") 
-    app.run_polling()
+            model="gpt
