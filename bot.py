@@ -99,6 +99,7 @@ def log_to_history(user, code, action, old_qty, new_qty):
             "inc": "Додано (+1)",
             "dec": "Зменшено (-1)",
             "add": "Додано нову шину",
+            "merge": "Додано кількість до наявної",
         }.get(action, "Встановлено точну кількість")
         history.append_row([now, username, str(code), action_text, old_qty, new_qty])
     except Exception as e:
@@ -186,12 +187,21 @@ def change_qty(user, row, action, value=None):
 
 def add_tire(user, pallet, code, size, name, qty):
     ws = get_worksheet()
-    ws.append_row(
-        [pallet, code, size, name, qty],
+    # перший вільний рядок після останнього заповненого артикула (колонка B)
+    next_row = max(len(ws.col_values(2)) + 1, FIRST_DATA_ROW)
+    if ws.row_count < next_row:
+        ws.add_rows(next_row - ws.row_count)
+    ws.update(
+        range_name=f"A{next_row}:E{next_row}",
+        values=[[pallet, code, size, name, qty]],
         value_input_option="USER_ENTERED",
-        table_range="A1",
     )
+    # перевірка: перечитуємо рядок і пересвідчуємось, що запис справді з'явився
+    saved = (ws.row_values(next_row) + [""] * 5)[:5]
+    if str(saved[1]).strip() != str(code).strip():
+        raise RuntimeError(f"запис не з'явився в рядку {next_row}")
     log_to_history(user, code, "add", 0, qty)
+    return next_row
 
 
 # ----------------- ВІДПРАВКА РЕЗУЛЬТАТІВ -----------------
@@ -249,7 +259,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Привіт! Я складський бот-помічник для обліку шин 🛞\n\n"
         "🔍 Пошук: надсилай артикул, розмір, назву або фото цінника.\n"
-        "➕ /add — додати нову шину в таблицю.\n"
+        "➕ /add — додати шину за артикулом (розмір і назву підтягну сам).\n"
         "📈 /stats — статистика."
     )
 
@@ -350,36 +360,56 @@ async def cancel_plain(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Скасовано.")
 
 
-# ----------------- ДОДАВАННЯ НОВОЇ ШИНИ (/add) -----------------
-PALLET, CODE, SIZE, NAME, QTY, CONFIRM = range(6)
+# ----------------- ДОДАВАННЯ ШИНИ (/add): артикул → палета → кількість -----------------
+CODE, NEWCONFIRM, SIZE, NAME, PALLET, QTY, CONFIRM = range(7)
+
+
+def parse_pallet(text):
+    m = re.fullmatch(r"(?:палет[аиуі]?\s*)?№?\s*(\d+)", text.strip(), re.IGNORECASE)
+    return m.group(1) if m else text.strip()
+
+
+def locations_text(items):
+    return "\n".join(f"• палета {i['pallet']} — {i['qty']} шт." for i in items[:10])
+
+
+def lookup_code(code):
+    df = load_df()
+    found = df[df["code"] == code]
+    return [
+        {"row": int(r["row"]), "pallet": r["pallet"], "size": r["size"], "name": r["name"], "qty": r["qty"]}
+        for _, r in found.iterrows()
+    ]
+
+
+def merge_qty(user, row, extra):
+    ws = get_worksheet()
+    vals = (ws.row_values(row) + [""] * 5)[:5]
+    cur = str(vals[4]).strip()
+    old = int(cur) if cur.isdigit() else 0
+    new = old + int(extra)
+    ws.update_cell(row, 5, new)
+    log_to_history(user, vals[1], "merge", old, new)
+    return vals[1], old, new
 
 
 async def add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("waiting_for_row", None)
-    new = {}
-    context.user_data["new"] = new
+    context.user_data["new"] = {}
     if update.callback_query:
         q = update.callback_query
         await q.answer()
         code = q.data.split("_", 1)[1]
         if code.isdigit() and code != "0":
-            new["code"] = code
-        send = q.message.reply_text
-    else:
-        send = update.message.reply_text
-    prefix = f"Артикул: {new['code']}\n\n" if "code" in new else ""
-    await send(f"➕ Додаємо нову шину (/cancel — скасувати).\n{prefix}📍 Палета / локація?")
-    return PALLET
-
-
-async def add_pallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (update.message.text or "").strip()
-    new = context.user_data.setdefault("new", {})
-    new["pallet"] = text
-    if "code" in new:
-        await update.message.reply_text("📏 Розмір? (наприклад 205/55 R16)")
-        return SIZE
-    await update.message.reply_text("🔢 Артикул?")
+            # пошук уже показав, що такого артикула в таблиці немає — одразу нова шина
+            context.user_data["new"]["code"] = code
+            await q.message.reply_text(
+                f"➕ Нова шина, артикул {code} (/cancel — скасувати).\n📏 Розмір? (наприклад 205/55 R16)"
+            )
+            return SIZE
+        await q.message.reply_text("➕ Додаємо шину (/cancel — скасувати).\n🔢 Артикул?")
+        return CODE
+    await update.message.reply_text("➕ Додаємо шину (/cancel — скасувати).\n🔢 Артикул?")
     return CODE
 
 
@@ -388,8 +418,43 @@ async def add_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(code) < 4:
         await update.message.reply_text("⚠️ Артикул має містити цифри (мінімум 4). Спробуй ще раз:")
         return CODE
-    context.user_data.setdefault("new", {})["code"] = code
-    await update.message.reply_text(f"Артикул: {code}\n📏 Розмір? (наприклад 205/55 R16)")
+    new = context.user_data.setdefault("new", {})
+    new["code"] = code
+    try:
+        items = await asyncio.to_thread(lookup_code, code)
+    except Exception as e:
+        await update.message.reply_text(f"⚠️ Помилка читання таблиці: {e}")
+        context.user_data.pop("new", None)
+        return ConversationHandler.END
+
+    if items:
+        first = items[0]
+        new["size"], new["name"] = first["size"], first["name"]
+        await update.message.reply_text(
+            "✅ Знайдено в таблиці:\n"
+            f"• Артикул: {code}\n• Розмір: {first['size']}\n• Назва: {first['name']}\n\n"
+            f"Вже є:\n{locations_text(items)}\n\n📍 На яку палету додаємо?"
+        )
+        return PALLET
+
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("➕ Додати як нову", callback_data="nt_yes"),
+        InlineKeyboardButton("❌ Скасувати", callback_data="nt_no"),
+    ]])
+    await update.message.reply_text(f"❌ Артикула {code} в таблиці немає. Додати як нову шину?", reply_markup=kb)
+    return NEWCONFIRM
+
+
+async def add_new_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    new = context.user_data.get("new")
+    if q.data == "nt_no" or not new:
+        context.user_data.pop("new", None)
+        await q.edit_message_text("❌ Скасовано.")
+        return ConversationHandler.END
+    await q.edit_message_text(f"➕ Нова шина, артикул {new['code']}")
+    await q.message.reply_text("📏 Розмір? (наприклад 205/55 R16)")
     return SIZE
 
 
@@ -401,6 +466,16 @@ async def add_size(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def add_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.setdefault("new", {})["name"] = (update.message.text or "").strip()
+    await update.message.reply_text("📍 На яку палету додаємо?")
+    return PALLET
+
+
+async def add_pallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (update.message.text or "").strip()
+    if not text:
+        await update.message.reply_text("⚠️ Вкажи палету або локацію:")
+        return PALLET
+    context.user_data.setdefault("new", {})["pallet"] = parse_pallet(text)
     await update.message.reply_text("🔢 Кількість (шт.)?")
     return QTY
 
@@ -418,14 +493,9 @@ async def add_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop("new", None)
         return ConversationHandler.END
 
-    warn = ""
+    dup = []
     try:
         dup = await asyncio.to_thread(find_same, new["code"], new["pallet"])
-        if dup:
-            warn = (
-                f"\n\n⚠️ Такий артикул на цій палеті вже є (рядок {dup[0]}). "
-                "Можливо, краще змінити кількість через пошук."
-            )
     except Exception:
         pass
 
@@ -436,12 +506,23 @@ async def add_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• Розмір: {new['size']}\n"
         f"• Назва: {new['name']}\n"
         f"• Кількість: {new['qty']} шт."
-        f"{warn}"
     )
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Додати", callback_data="add_ok"),
-        InlineKeyboardButton("❌ Скасувати", callback_data="add_no"),
-    ]])
+    if dup:
+        new["merge_row"] = dup[0]
+        summary += (
+            f"\n\n⚠️ Цей артикул на палеті {new['pallet']} уже є (рядок {dup[0]}). "
+            "Додати кількість до наявного рядка чи створити окремий?"
+        )
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"➕ Додати +{new['qty']} до наявного", callback_data="add_merge")],
+            [InlineKeyboardButton("📄 Окремий новий рядок", callback_data="add_ok")],
+            [InlineKeyboardButton("❌ Скасувати", callback_data="add_no")],
+        ])
+    else:
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Додати", callback_data="add_ok"),
+            InlineKeyboardButton("❌ Скасувати", callback_data="add_no"),
+        ]])
     await update.message.reply_text(summary, reply_markup=kb)
     return CONFIRM
 
@@ -454,15 +535,22 @@ async def add_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("❌ Скасовано.")
         return ConversationHandler.END
     try:
-        await asyncio.to_thread(
-            add_tire, q.from_user, new["pallet"], new["code"], new["size"], new["name"], new["qty"]
-        )
-        await q.edit_message_text(
-            f"✅ Додано: {new['name']} ({new['size']}), арт. {new['code']}, "
-            f"палета {new['pallet']}, {new['qty']} шт."
-        )
+        if q.data == "add_merge" and new.get("merge_row"):
+            code, old, total = await asyncio.to_thread(merge_qty, q.from_user, new["merge_row"], new["qty"])
+            await q.edit_message_text(
+                f"✅ Додано {new['qty']} шт. до рядка {new['merge_row']} (палета {new['pallet']}, арт. {code}): "
+                f"було {old}, стало {total}."
+            )
+        else:
+            row = await asyncio.to_thread(
+                add_tire, q.from_user, new["pallet"], new["code"], new["size"], new["name"], new["qty"]
+            )
+            await q.edit_message_text(
+                f"✅ Додано в рядок {row}: {new['name']} ({new['size']}), арт. {new['code']}, "
+                f"палета {new['pallet']}, {new['qty']} шт."
+            )
     except Exception as e:
-        await q.edit_message_text(f"⚠️ Не вдалося додати в таблицю: {e}")
+        await q.edit_message_text(f"⚠️ Не вдалося записати в таблицю: {e}")
     return ConversationHandler.END
 
 
@@ -591,12 +679,13 @@ if __name__ == "__main__":
             CallbackQueryHandler(add_start, pattern=r"^addnew_\d+$"),
         ],
         states={
-            PALLET: [MessageHandler(plain_text, add_pallet)],
             CODE: [MessageHandler(plain_text, add_code)],
+            NEWCONFIRM: [CallbackQueryHandler(add_new_decision, pattern=r"^nt_(yes|no)$")],
             SIZE: [MessageHandler(plain_text, add_size)],
             NAME: [MessageHandler(plain_text, add_name)],
+            PALLET: [MessageHandler(plain_text, add_pallet)],
             QTY: [MessageHandler(plain_text, add_qty)],
-            CONFIRM: [CallbackQueryHandler(add_confirm, pattern=r"^add_(ok|no)$")],
+            CONFIRM: [CallbackQueryHandler(add_confirm, pattern=r"^add_(ok|no|merge)$")],
             ConversationHandler.TIMEOUT: [MessageHandler(filters.ALL, add_timeout)],
         },
         fallbacks=[CommandHandler("cancel", add_cancel)],
