@@ -1,5 +1,6 @@
-python-telegram-bot
+python-telegram-bot[job-queue]>=21.0,<23
+gspread>=6.0
 pandas
+openai>=1.40
 openpyxl
-openai
-gspread
+tzdata
