@@ -60,10 +60,11 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN") or "ВСТАВ_СЮД�
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")      # потрібен ТІЛЬКИ для пошуку по фото цінника
 SPREADSHEET_NAME = os.environ.get("SPREADSHEET_NAME", "шини 2026")
 
-# Необов'язково: окрема Google Таблиця зі складом (назва, посилання або ID).
-# Потрібна для звірки зі складом. Колонки: артикул, назва, кількість (порядок неважливий).
+# Склад для звірки: за замовчуванням аркуш «Склад» у цій самій Google Таблиці
+# (колонки: Артикул | Назва | Кількість). Можна змінити назву аркуша змінною SKLAD_SHEET
+# або вказати окрему таблицю змінною SKLAD_SPREADSHEET (назва, посилання або ID).
 SKLAD_SPREADSHEET = os.environ.get("SKLAD_SPREADSHEET", "").strip()
-SKLAD_SHEET = os.environ.get("SKLAD_SHEET", "").strip()     # назва аркуша; порожньо = перший аркуш
+SKLAD_SHEET = os.environ.get("SKLAD_SHEET", "").strip() or "Склад"
 
 # Необов'язково: чати для щоденного звіту й сповіщень про мінімум (через кому). Свій ID: команда /myid
 REPORT_CHAT_IDS = [int(x) for x in re.findall(r"-?\d+", os.environ.get("REPORT_CHAT_IDS", ""))]
@@ -76,7 +77,7 @@ MAX_LIST = 40           # скільки артикулів у списку кн
 MAX_QTY = 999           # більше — схоже, що замість кількості вписали артикул
 SANE_QTY = 5000         # у звітах ігноруємо записи історії з більшими значеннями
 CACHE_TTL = 45          # секунд, кеш таблиці
-SKLAD_TTL = 300
+SKLAD_TTL = 120
 HISTORY_TTL = 60
 UNDO_WINDOW = 15 * 60   # секунд, скільки діє кнопка "Відмінити"
 KYIV = ZoneInfo("Europe/Kyiv")
@@ -197,26 +198,35 @@ def cached_code_of_row(row):
 
 
 # ----------------- СКЛАД (необов'язково) -----------------
-def load_sklad():
-    """dict: артикул -> {'name', 'qty'}; None, якщо склад не налаштований."""
-    if not SKLAD_SPREADSHEET:
-        return None
+_sklad_meta = {"rows": 0, "dups": []}
+
+
+def load_sklad(force=False):
+    """dict: артикул -> {'name', 'qty'}; None, якщо аркуша зі складом немає. Дублі артикулів підсумовуються."""
     with _lock:
-        if _sklad_cache["data"] is not None and _time.time() - _sklad_cache["ts"] < SKLAD_TTL:
+        if not force and _time.time() - _sklad_cache["ts"] < SKLAD_TTL and _sklad_cache["ts"] > 0:
             return _sklad_cache["data"]
-    gc = get_client()
-    m = re.search(r"/d/([A-Za-z0-9_-]+)", SKLAD_SPREADSHEET)
-    if m:
-        sh = gc.open_by_key(m.group(1))
-    elif re.fullmatch(r"[A-Za-z0-9_-]{30,}", SKLAD_SPREADSHEET):
-        sh = gc.open_by_key(SKLAD_SPREADSHEET)
-    else:
-        sh = gc.open(SKLAD_SPREADSHEET)
-    ws = sh.worksheet(SKLAD_SHEET) if SKLAD_SHEET else sh.sheet1
-    result = {}
+    try:
+        if SKLAD_SPREADSHEET:
+            gc = get_client()
+            m = re.search(r"/d/([A-Za-z0-9_-]+)", SKLAD_SPREADSHEET)
+            if m:
+                sh = gc.open_by_key(m.group(1))
+            elif re.fullmatch(r"[A-Za-z0-9_-]{30,}", SKLAD_SPREADSHEET):
+                sh = gc.open_by_key(SKLAD_SPREADSHEET)
+            else:
+                sh = gc.open(SKLAD_SPREADSHEET)
+            ws = sh.worksheet(SKLAD_SHEET) if os.environ.get("SKLAD_SHEET", "").strip() else sh.sheet1
+        else:
+            ws = get_spreadsheet().worksheet(SKLAD_SHEET)
+    except gspread.exceptions.WorksheetNotFound:
+        with _lock:
+            _sklad_cache["data"], _sklad_cache["ts"] = None, _time.time()
+        return None
+    result, seen, dups, n_rows = {}, {}, [], 0
     for r in ws.get_all_values():
         cells = [str(c).strip() for c in r]
-        code_idx = next((i for i, s in enumerate(cells) if re.fullmatch(r"\d{6,9}(\.0)?", s)), None)
+        code_idx = next((i for i, s_ in enumerate(cells) if re.fullmatch(r"\d{6,9}(\.0)?", s_)), None)
         if code_idx is None:
             continue
         code = cells[code_idx].split(".")[0]
@@ -225,21 +235,26 @@ def load_sklad():
             if i != code_idx and re.fullmatch(r"-?\d+([.,]0+)?", cells[i]):
                 qty = to_int(cells[i])
                 break
-        texts = [s for i, s in enumerate(cells) if i != code_idx and s and not re.fullmatch(r"-?[\d.,]+", s)]
+        texts = [s_ for i, s_ in enumerate(cells) if i != code_idx and s_ and not re.fullmatch(r"-?[\d.,]+", s_)]
         name = max(texts, key=len) if texts else ""
+        n_rows += 1
         e = result.setdefault(code, {"name": name, "qty": 0})
         e["qty"] += qty or 0
         if not e["name"]:
             e["name"] = name
+        seen[code] = seen.get(code, 0) + 1
+        if seen[code] == 2:
+            dups.append(code)
     with _lock:
-        _sklad_cache["data"] = result
-        _sklad_cache["ts"] = _time.time()
+        _sklad_cache["data"], _sklad_cache["ts"] = result, _time.time()
+        _sklad_meta["rows"], _sklad_meta["dups"] = n_rows, dups
     return result
 
 
-def load_sklad_safe():
+def load_sklad_safe(force=False):
     try:
-        return load_sklad()
+        data = load_sklad(force)
+        return data if data else None
     except Exception as e:
         print(f"⚠️ Не вдалося прочитати склад: {e}")
         return None
@@ -876,7 +891,7 @@ def build_daily_report():
         text += f"\n🔻 Мінімальний залишок (≤ {LOW_STOCK}): {len(low)} артикулів\n"
         for c, q in sorted(low, key=lambda x: x[1])[:12]:
             text += f"• {c} · {short_name(names.get(c, ''))[:34]} — {q} шт.\n"
-    sk = load_sklad_safe()
+    sk = load_sklad_safe(force=True)
     if sk is not None:
         rows = compare_sklad(df, sk)
         bad = [r for r in rows if r["diff"] != 0]
@@ -977,7 +992,7 @@ HELP_TEXT = (
     "📦 /pallet 27 — що лежить на палеті (або /pallet зал)\n"
     "🧮 /inventory 27 — інвентаризація палети по позиціях\n"
     "📊 /stats — статистика\n"
-    "⚖️ /zvirka — звірка зі складом\n"
+    "⚖️ /zvirka — звірка з аркушем «Склад» (онови його й повтори команду)\n"
     "📋 /report 7 — звіт за N днів, 🕘 /history — останні зміни\n"
     "📥 /export — вивантажити таблицю в Excel\n"
     "🆔 /myid — мій ID для щоденного звіту\n"
@@ -1081,33 +1096,39 @@ async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 ZVIRKA_SETUP = (
-    "⚖️ Склад ще не підключено.\n\n"
-    "Щоб працювала звірка: створи окрему Google Таблицю зі складом (колонки: артикул, назва, кількість), "
-    "відкрий до неї доступ для сервісного акаунта{email} і додай на Render змінну SKLAD_SPREADSHEET "
-    "(назва таблиці або посилання). Якщо склад на окремому аркуші, додай ще SKLAD_SHEET з назвою аркуша."
+    "⚖️ Не бачу даних складу.\n\n"
+    "Створи в цій Google Таблиці аркуш «{sheet}» з колонками: Артикул | Назва | Кількість, "
+    "встав туди склад і повтори /zvirka."
 )
 
 
 @guarded
 async def zvirka_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not SKLAD_SPREADSHEET:
-        em = service_email()
-        await update.effective_message.reply_text(ZVIRKA_SETUP.format(email=f" ({em})" if em else ""))
+    sk = await asyncio.to_thread(load_sklad, True)
+    if not sk:
+        await update.effective_message.reply_text(ZVIRKA_SETUP.format(sheet=SKLAD_SHEET))
         return
-    sk = await asyncio.to_thread(load_sklad)
     df = await asyncio.to_thread(load_df, True)
     rows = await asyncio.to_thread(compare_sklad, df, sk)
     text = build_zvirka_text(rows)
+    text += f"\n🗂 Аркуш «{SKLAD_SHEET}»: {_sklad_meta['rows']} рядків, {len(sk)} артикулів."
+    if _sklad_meta["dups"]:
+        d = _sklad_meta["dups"]
+        text += f"\nℹ️ {len(d)} артикулів на аркуші повторюються, кількості підсумовано: " + ", ".join(d[:6]) + ("…" if len(d) > 6 else "")
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("📥 Excel зі звіркою", callback_data="zvx")]])
-    for i, part in enumerate(chunk_text(text)):
-        await update.effective_message.reply_text(part, reply_markup=kb if i == len(chunk_text(text)) - 1 else None)
+    parts = chunk_text(text)
+    for i, part in enumerate(parts):
+        await update.effective_message.reply_text(part, reply_markup=kb if i == len(parts) - 1 else None)
 
 
 @guarded
 async def zvirka_excel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer("Готую файл…")
-    sk = await asyncio.to_thread(load_sklad)
+    sk = await asyncio.to_thread(load_sklad, True)
+    if not sk:
+        await q.message.reply_text(ZVIRKA_SETUP.format(sheet=SKLAD_SHEET))
+        return
     df = await asyncio.to_thread(load_df, True)
     rows = await asyncio.to_thread(compare_sklad, df, sk)
     bio = await asyncio.to_thread(zvirka_xlsx, rows)
