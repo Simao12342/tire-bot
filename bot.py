@@ -108,6 +108,7 @@ _spreadsheet = None
 _cache = {"df": None, "ts": 0.0}
 _sklad_cache = {"data": None, "ts": 0.0}
 _hist_cache = {"rows": None, "ts": 0.0}
+_meta = {"blank_rows": []}
 
 
 def get_client():
@@ -160,10 +161,16 @@ def load_df(force=False):
         if not force and _cache["df"] is not None and now - _cache["ts"] < CACHE_TTL:
             return _cache["df"].copy()
     data = get_worksheet().get_all_values()
-    rows = []
+    rows, blank, last_filled = [], [], 0
     for i, r in enumerate(data[FIRST_DATA_ROW - 1:], start=FIRST_DATA_ROW):
         r = (list(r) + [""] * 5)[:5]
         rows.append([i] + [str(x).strip() for x in r])
+        if str(r[1]).strip():
+            last_filled = i
+        elif not any(str(x).strip() for x in r):
+            blank.append(i)
+    with _lock:
+        _meta["blank_rows"] = [b for b in blank if b < last_filled]
     df = pd.DataFrame(rows, columns=["row", "pallet", "code", "size", "name", "qty"])
     df["code"] = df["code"].str.replace(r"\.0$", "", regex=True)
     df = df[df["code"] != ""].copy()
@@ -172,6 +179,11 @@ def load_df(force=False):
         _cache["df"] = df
         _cache["ts"] = _time.time()
     return df.copy()
+
+
+def get_meta():
+    with _lock:
+        return dict(_meta)
 
 
 def invalidate_cache():
@@ -276,21 +288,37 @@ ACTION_TEXT = {
     "merge": "Додано кількість до наявної",
     "undo": "Скасовано зміну",
     "inv": "Інвентаризація",
+    "invdone": "Інвентаризація завершена",
     "set": "Встановлено точну кількість",
 }
 
 
-def log_to_history(user, code, action, old_qty, new_qty):
+def _append_history(rows):
+    """Дописує рядки в «Історію» (7 колонок, а якщо аркуш вужчий — 6)."""
+    history = get_spreadsheet().worksheet("Історія")
     try:
-        history = get_spreadsheet().worksheet("Історія")
-        history.append_row([now_str(), user_label(user), str(code), ACTION_TEXT.get(action, ACTION_TEXT["set"]), old_qty, new_qty])
-        _hist_cache["ts"] = 0.0
+        history.append_rows(rows, value_input_option="USER_ENTERED")
+    except Exception:
+        history.append_rows([r[:6] for r in rows], value_input_option="USER_ENTERED")
+    _hist_cache["ts"] = 0.0
+
+
+def log_to_history(user, code, action, old_qty, new_qty, loc=""):
+    try:
+        _append_history([[now_str(), user_label(user), str(code), ACTION_TEXT.get(action, ACTION_TEXT["set"]), old_qty, new_qty, loc_label(loc) if loc else ""]])
+    except Exception as e:
+        print(f"⚠️ Помилка запису в історію: {e}")
+
+
+def log_inventory_done(user, label, checked, changed):
+    try:
+        _append_history([[now_str(), user_label(user), "—", ACTION_TEXT["invdone"], checked, changed, label]])
     except Exception as e:
         print(f"⚠️ Помилка запису в історію: {e}")
 
 
 def read_history():
-    """Список записів історії: dict(ts, user, code, action, old, new)."""
+    """Список записів історії: dict(ts, user, code, action, old, new, loc, done)."""
     with _lock:
         if _hist_cache["rows"] is not None and _time.time() - _hist_cache["ts"] < HISTORY_TTL:
             return _hist_cache["rows"]
@@ -301,13 +329,14 @@ def read_history():
         return []
     out = []
     for r in data[1:]:
-        r = (list(r) + [""] * 6)[:6]
+        r = (list(r) + [""] * 7)[:7]
         try:
             ts = datetime.strptime(r[0].strip(), "%Y-%m-%d %H:%M:%S")
         except Exception:
             continue
         out.append({"ts": ts, "user": r[1].strip(), "code": r[2].strip(), "action": r[3].strip(),
-                    "old": to_int(r[4]), "new": to_int(r[5])})
+                    "old": to_int(r[4]), "new": to_int(r[5]), "loc": r[6].strip(),
+                    "done": r[3].strip() == ACTION_TEXT["invdone"]})
     with _lock:
         _hist_cache["rows"] = out
         _hist_cache["ts"] = _time.time()
@@ -333,11 +362,11 @@ def change_qty(user, row, action, value=None, log=True):
     ws.update_cell(row, 5, new)
     cache_set_qty(row, new)
     if log:
-        log_to_history(user, code, action, old, new)
+        log_to_history(user, code, action, old, new, vals[0])
     return code, old, new
 
 
-def apply_qty_batch(user, changes, action="inv"):
+def apply_qty_batch(user, changes, action="inv", loc=""):
     """changes: список (row, code, old, new). Один запит на запис і один на історію."""
     if not changes:
         return 0
@@ -349,13 +378,8 @@ def apply_qty_batch(user, changes, action="inv"):
     for row, _code, _old, new in changes:
         cache_set_qty(row, new)
     try:
-        history = get_spreadsheet().worksheet("Історія")
         ts, who = now_str(), user_label(user)
-        history.append_rows(
-            [[ts, who, str(code), ACTION_TEXT[action], old, new] for _row, code, old, new in changes],
-            value_input_option="USER_ENTERED",
-        )
-        _hist_cache["ts"] = 0.0
+        _append_history([[ts, who, str(code), ACTION_TEXT[action], old, new, loc] for _row, code, old, new in changes])
     except Exception as e:
         print(f"⚠️ Помилка запису в історію: {e}")
     return len(changes)
@@ -375,7 +399,7 @@ def add_tire(user, pallet, code, size, name, qty):
     if str(saved[1]).strip() != str(code).strip():
         raise RuntimeError(f"запис не з'явився в рядку {next_row}")
     invalidate_cache()
-    log_to_history(user, code, "add", 0, qty)
+    log_to_history(user, code, "add", 0, qty, pallet)
     return next_row
 
 
@@ -387,7 +411,7 @@ def merge_qty(user, row, extra):
     new = old + int(extra)
     ws.update_cell(row, 5, new)
     cache_set_qty(row, new)
-    log_to_history(user, code, "merge", old, new)
+    log_to_history(user, code, "merge", old, new, vals[0])
     return code, old, new
 
 
@@ -700,7 +724,7 @@ def build_location_view(df, key):
 def history_since(hours=None, days=None):
     delta = timedelta(hours=hours) if hours else timedelta(days=days or 1)
     since = datetime.now(KYIV).replace(tzinfo=None) - delta
-    return [h for h in read_history() if h["ts"] >= since]
+    return [h for h in read_history() if h["ts"] >= since and not h.get("done")]
 
 
 def sane(h):
@@ -870,7 +894,10 @@ def build_history_text(n=10):
         return "Історія змін порожня."
     lines = [f"🕘 Останні {len(items)} змін:\n"]
     for h in reversed(items):
-        lines.append(f"{h['ts'].strftime('%d.%m %H:%M')} · {h['user']} · {h['code']} · {h['action']} · {h['old']} → {h['new']}")
+        if h.get("done"):
+            lines.append(f"{h['ts'].strftime('%d.%m %H:%M')} · {h['user']} · 🧮 інвентаризація {h['loc']}: перевірено {h['old']}, змінено {h['new']}")
+        else:
+            lines.append(f"{h['ts'].strftime('%d.%m %H:%M')} · {h['user']} · {h['code']} · {h['action']} · {h['old']} → {h['new']}")
     return "\n".join(lines)
 
 
@@ -889,15 +916,26 @@ def build_daily_report():
     low = [(c, int(q)) for c, q in totals.items() if q <= LOW_STOCK]
     if low:
         text += f"\n🔻 Мінімальний залишок (≤ {LOW_STOCK}): {len(low)} артикулів\n"
-        for c, q in sorted(low, key=lambda x: x[1])[:12]:
+        for c, q in sorted(low, key=lambda x: x[1])[:8]:
             text += f"• {c} · {short_name(names.get(c, ''))[:34]} — {q} шт.\n"
+        if len(low) > 8:
+            text += f"… і ще {len(low) - 8}. Повний список: /stats → Огляд.\n"
+    d7 = hist_moves(days=1)
+    cons = consumption(d7)
+    if cons:
+        text += "\n🔥 Найбільша витрата за добу:\n"
+        for c, v in sorted(cons.items(), key=lambda x: -x[1])[:3]:
+            text += f"• {c} · {short_name(names.get(c, ''))[:30]} — {v} шт. (залишок {int(totals.get(c, 0))})\n"
     sk = load_sklad_safe(force=True)
     if sk is not None:
         rows = compare_sklad(df, sk)
         bad = [r for r in rows if r["diff"] != 0]
         text += f"\n⚖️ Розбіжностей зі складом: {len(bad)} артикулів\n"
-        for r in bad[:6]:
+        for r in bad[:5]:
             text += f"• {r['code']} · {r['name'][:30]} — {r['diff']:+d}\n"
+    qn = quality_count(quality_issues(df, sk))
+    text += f"\n🧪 Якість даних: {qn} зауважень\n" if qn else "\n🧪 Якість даних: ✅ без зауважень\n"
+    text += "\nДеталі: /stats"
     return text
 
 
@@ -976,6 +1014,595 @@ def zvirka_xlsx(rows):
     return bio
 
 
+# ================= РОЗШИРЕНА СТАТИСТИКА =================
+DEAD_DAYS = 30
+SEASONS = ["❄️ Зима", "☀️ Літо", "🌦 Всесезон", "📦 Інше"]
+BRANDS = [
+    "Premiorri", "Premiori", "Rosava", "Bridgestone", "Michelin", "Nokian", "Hankook", "Continental", "Goodyear",
+    "Matador", "Barum", "Cordiant", "Tigar", "Kormoran", "Sailun", "Triangle", "Windforce", "Imperial", "Orium",
+    "Falken", "Dunlop", "Pirelli", "Yokohama", "Kumho", "Nexen", "BFGoodrich", "Firestone", "Toyo", "Lassa",
+    "Mastersteel", "Roadstone", "Aosen", "Estrada", "Powertrac", "Petlas", "Horizon", "Hifly", "Marshal",
+]
+
+
+def season_of(name):
+    n = str(name).lower()
+    if any(w in n for w in ["всесезон", "all weather", "all-season", "4seasons", "в.с", "в/с"]):
+        return SEASONS[2]
+    if any(w in n for w in ["зима", "зимов", "winter", "snow", "ice"]):
+        return SEASONS[0]
+    if any(w in n for w in ["літо", "літній", "summer"]):
+        return SEASONS[1]
+    return SEASONS[3]
+
+
+def radius_of(size):
+    m = re.search(r"R\s*(\d{2})", str(size), re.I)
+    return f"R{m.group(1)}" if m else "Інші"
+
+
+def size_of(size):
+    m = re.search(r"(\d{3})\s*/\s*(\d{2})\D{0,3}R?\s*(\d{2})", str(size), re.I)
+    return f"{m.group(1)}/{m.group(2)}R{m.group(3)}" if m else (str(size) or "—")
+
+
+def size_sort_key(sz):
+    m = re.match(r"(\d{3})/(\d{2})R(\d{2})", sz)
+    return (int(m.group(3)), int(m.group(1)), int(m.group(2))) if m else (99, 0, 0)
+
+
+def brand_of(name):
+    n = str(name).lower()
+    for b in BRANDS:
+        if b.lower() in n:
+            return "Premiorri" if b == "Premiori" else b
+    return "Інший"
+
+
+def enrich(df):
+    d = df.copy()
+    d["season"] = d["name"].apply(season_of)
+    d["radius"] = d["size"].apply(radius_of)
+    d["sz"] = d["size"].apply(size_of)
+    d["brand"] = d["name"].apply(brand_of)
+    return d
+
+
+def pct(part, whole):
+    return f"{(100 * part / whole):.0f}%" if whole else "—"
+
+
+def arrow(n):
+    return "▲" if n > 0 else ("▼" if n < 0 else "•")
+
+
+# ---- історія: допоміжне ----
+def hist_moves(days=None, hours=None):
+    return [h for h in history_since(hours=hours, days=days) if sane(h)]
+
+
+def hist_start():
+    items = [h for h in read_history() if not h.get("done")]
+    return min((h["ts"] for h in items), default=None)
+
+
+def covered_days(days):
+    start = hist_start()
+    if not start:
+        return 0
+    cov = (datetime.now(KYIV).replace(tzinfo=None) - start).total_seconds() / 86400
+    return min(days, max(1, int(cov) + 1))
+
+
+def consumption(items):
+    """Витрата по артикулах (≈ продажі): зменшення через ➖ і точну кількість, мінус відмінені."""
+    cons = {}
+    for h in items:
+        if h["action"] in (ACTION_TEXT["dec"], ACTION_TEXT["set"]) and h["old"] > h["new"]:
+            cons[h["code"]] = cons.get(h["code"], 0) + h["old"] - h["new"]
+        elif h["action"] == ACTION_TEXT["undo"] and h["new"] > h["old"]:
+            cons[h["code"]] = cons.get(h["code"], 0) - (h["new"] - h["old"])
+    return {c: v for c, v in cons.items() if v > 0}
+
+
+def net(items):
+    return sum(h["new"] - h["old"] for h in items)
+
+
+def daily_totals(df, days=30):
+    cur = int(df["q"].sum())
+    by_day = {}
+    for h in hist_moves(days=days + 1):
+        by_day[h["ts"].date()] = by_day.get(h["ts"].date(), 0) + h["new"] - h["old"]
+    today = datetime.now(KYIV).date()
+    out = []
+    for i in range(days):
+        d = today - timedelta(days=i)
+        out.append((d, cur))
+        cur -= by_day.get(d, 0)
+    return list(reversed(out))
+
+
+# ---- якість даних ----
+def quality_issues(df, sk):
+    conflicts = []
+    for c, g in df.groupby("code"):
+        names = {norm(short_name(n)) for n in g["name"]}
+        sizes = {norm(s) for s in g["size"] if s}
+        if len(names) > 1 or len(sizes) > 1:
+            conflicts.append(c)
+    dup = [(c, p) for (c, p), g in df.groupby(["code", "pallet"]) if len(g) > 1]
+    blank = list(get_meta().get("blank_rows", []))
+    big = df[df["q"] > MAX_QTY]
+    zero_rows = df[df["q"] == 0]
+    tot = df.groupby("code")["q"].sum()
+    not_in_sk, missing = [], []
+    if sk:
+        not_in_sk = [c for c, q in tot.items() if q > 0 and (c not in sk or sk[c]["qty"] <= 0)]
+        missing = [c for c, v in sk.items() if v["qty"] > 0 and tot.get(c, 0) <= 0]
+    return {"conflicts": conflicts, "dup": dup, "blank": blank, "big": big, "zero_rows": zero_rows,
+            "not_in_sk": not_in_sk, "missing": missing, "has_sk": bool(sk)}
+
+
+def quality_count(q):
+    return len(q["conflicts"]) + len(q["dup"]) + len(q["blank"]) + len(q["big"]) + len(q["not_in_sk"]) + len(q["missing"])
+
+
+def build_quality_text(df, sk):
+    q = quality_issues(df, sk)
+    names = df.drop_duplicates("code").set_index("code")["name"].to_dict()
+    lines = ["🧪 Якість даних\n"]
+    if quality_count(q) == 0:
+        lines.append("✅ Проблем не знайдено.")
+    if q["conflicts"]:
+        lines.append(f"⚠️ Різні назви чи розміри під одним артикулом: {len(q['conflicts'])}")
+        for c in q["conflicts"][:8]:
+            lines.append(f"   • {c} · {short_name(names.get(c, ''))[:34]}")
+    if q["dup"]:
+        lines.append(f"⚠️ Артикул двічі на одній локації: {len(q['dup'])}")
+        for c, p in q["dup"][:8]:
+            lines.append(f"   • {c} · {loc_label(p)}")
+    if q["blank"]:
+        lines.append(f"⚠️ Порожні рядки в таблиці: {len(q['blank'])} (рядки {', '.join(str(r) for r in q['blank'][:10])})")
+    if len(q["big"]):
+        lines.append(f"⚠️ Підозріла кількість (> {MAX_QTY}): {len(q['big'])}")
+        for _, r in q["big"].head(5).iterrows():
+            lines.append(f"   • рядок {int(r['row'])}: {r['code']} — {int(r['q'])}")
+    if q["has_sk"]:
+        if q["not_in_sk"]:
+            lines.append(f"❓ Є в таблиці, немає на складі: {len(q['not_in_sk'])}")
+            for c in q["not_in_sk"][:8]:
+                lines.append(f"   • {c} · {short_name(names.get(c, ''))[:34]}")
+        if q["missing"]:
+            lines.append(f"❓ Є на складі, немає в таблиці: {len(q['missing'])}")
+            for c in q["missing"][:8]:
+                lines.append(f"   • {c} · {short_name(sk[c]['name'])[:34]} — {sk[c]['qty']} шт.")
+    lines.append(f"\nℹ️ Рядків з нульовою кількістю: {len(q['zero_rows'])} (це не помилка, але захаращує таблицю).")
+    return "\n".join(lines)
+
+
+# ---- розміри ----
+def build_sizes_text(df, sk=None):
+    en = enrich(df[df["q"] > 0])
+    total = int(en["q"].sum())
+    if en.empty:
+        return "📏 Немає даних."
+    mat = en.groupby(["radius", "season"])["q"].sum().unstack(fill_value=0)
+    lines = ["📏 Розміри та сезонність\n", "Шин за радіусом і сезоном:"]
+    for rad in sorted(mat.index, key=lambda r: (int(r[1:]) if r[1:].isdigit() else 99)):
+        row = mat.loc[rad]
+        parts = " · ".join(f"{s.split()[0]} {int(row[s])}" for s in SEASONS if s in mat.columns and int(row[s]) > 0)
+        lines.append(f"• {rad}: {parts} — разом {int(row.sum())} ({pct(row.sum(), total)})")
+    by_season = en.groupby("season")["q"].sum()
+    lines.append("\nЧастки сезонів: " + " · ".join(f"{s.split()[0]} {pct(by_season.get(s, 0), total)}" for s in SEASONS if by_season.get(s, 0)))
+    top = en.groupby("sz").agg(q=("q", "sum"), n=("code", "nunique")).sort_values("q", ascending=False).head(8)
+    lines.append("\n🏆 Найбільші запаси за розмірами:")
+    for sz, r in top.iterrows():
+        lines.append(f"• {sz} — {int(r['q'])} шт. ({int(r['n'])} арт.)")
+    cons = consumption(hist_moves(days=30))
+    size_cons = {}
+    code_size = en.drop_duplicates("code").set_index("code")["sz"].to_dict()
+    for c, v in cons.items():
+        if c in code_size:
+            size_cons[code_size[c]] = size_cons.get(code_size[c], 0) + v
+    size_stock = en.groupby("sz")["q"].sum().to_dict()
+    holes = sorted([(s, size_stock.get(s, 0), v) for s, v in size_cons.items() if size_stock.get(s, 0) <= 3], key=lambda x: -x[2])
+    if holes:
+        lines.append("\n🕳 Ходові розміри, що закінчуються (витрата за 30 дн. + залишок ≤ 3 шт.):")
+        for s, st, v in holes[:8]:
+            lines.append(f"• {s}: залишок {st}, витрата {v}")
+    low = sorted([s for s, q in size_stock.items() if q <= 3], key=size_sort_key)
+    if low:
+        lines.append(f"\n🔻 Розміри із залишком ≤ 3 шт.: {len(low)}")
+        lines.append(", ".join(f"{s} ({size_stock[s]})" for s in low[:14]) + ("…" if len(low) > 14 else ""))
+    return "\n".join(lines)
+
+
+# ---- бренди ----
+def build_brands_text(df, sk=None):
+    en = enrich(df[df["q"] > 0])
+    total = int(en["q"].sum())
+    if en.empty:
+        return "🏭 Немає даних."
+    by = en.groupby("brand").agg(q=("q", "sum"), n=("code", "nunique")).sort_values("q", ascending=False)
+    lines = ["🏭 Бренди\n"]
+    for b, r in by.iterrows():
+        lines.append(f"• {b}: {int(r['q'])} шт. ({pct(r['q'], total)}) · {int(r['n'])} арт.")
+    arts = en.groupby("code")["q"].sum().sort_values(ascending=False)
+    cum, k = 0, 0
+    for q in arts:
+        cum += q
+        k += 1
+        if cum >= 0.8 * total:
+            break
+    lines.append(f"\n📌 Правило 80/20: {k} з {len(arts)} артикулів ({pct(k, len(arts))}) дають 80% залишку.")
+    cb = en.groupby(["brand", "radius"])["q"].sum().reset_index().sort_values("q", ascending=False).head(6)
+    lines.append("\n🔝 Топ «бренд + радіус»:")
+    for _, r in cb.iterrows():
+        lines.append(f"• {r['brand']} {r['radius']}: {int(r['q'])} шт.")
+    return "\n".join(lines)
+
+
+# ---- локації ----
+def build_locations_text(df, sk=None):
+    lines = ["📍 Локації\n"]
+    pal = []
+    for n in range(1, 45):
+        g = df[df["pallet"].str.strip() == str(n)]
+        pal.append((n, len(g), int(g["q"].sum())))
+    empty = [n for n, rows, q in pal if q == 0]
+    low = [(n, q) for n, rows, q in pal if 0 < q <= 2]
+    full = sorted(pal, key=lambda x: -x[2])[:5]
+    lines.append(f"📦 Палети 1–44: порожніх {len(empty)}, майже порожніх (≤ 2 шт.) {len(low)}")
+    if empty:
+        lines.append("Порожні: " + ", ".join(str(n) for n in empty))
+    if low:
+        lines.append("Майже порожні: " + ", ".join(f"{n} ({q})" for n, q in low))
+    lines.append("Найзавантаженіші: " + ", ".join(f"{n} ({q})" for n, rows, q in full))
+    for key in ("zal", "vul", "fas"):
+        g = location_rows(df, key)
+        lines.append(f"• {SPECIAL_LOCS[key]}: {len(g)} поз., {int(g['q'].sum())} шт.")
+    scat = []
+    for c, g in df[df["q"] > 0].groupby("code"):
+        if g["pallet"].nunique() >= 4:
+            scat.append((c, g["pallet"].nunique(), int(g["q"].sum())))
+    scat.sort(key=lambda x: -x[1])
+    names = df.drop_duplicates("code").set_index("code")["name"].to_dict()
+    if scat:
+        lines.append(f"\n🧩 Артикули, розкидані по 4+ локаціях ({len(scat)}), можна зібрати докупи:")
+        for c, n, q in scat[:8]:
+            lines.append(f"• {c} · {short_name(names.get(c, ''))[:30]} — {n} лок., {q} шт.")
+    hist = read_history()
+    last = {}
+    for h in hist:
+        if h.get("loc") and h["action"] in (ACTION_TEXT["inv"], ACTION_TEXT["invdone"]):
+            last[h["loc"]] = max(last.get(h["loc"], h["ts"]), h["ts"])
+    now = datetime.now(KYIV).replace(tzinfo=None)
+    stale = [n for n, rows, q in pal if rows > 0 and (f"палета {n}" not in last or (now - last[f"палета {n}"]).days >= 30)]
+    if last:
+        lines.append(f"\n🧮 Інвентаризація через бота: палет без перевірки 30+ днів — {len(stale)} з {len([1 for n, r, q in pal if r > 0])}")
+        if stale:
+            lines.append(", ".join(str(n) for n in stale[:30]) + ("…" if len(stale) > 30 else ""))
+    else:
+        lines.append("\n🧮 Інвентаризацій через бота ще не було. Почни з /inventory 27, і тут з'явиться контроль «давно не перевіряли».")
+    return "\n".join(lines)
+
+
+# ---- рух ----
+def build_movement_text(df, sk=None):
+    lines = ["🔄 Рух і витрата\n"]
+    d7, d30 = hist_moves(days=7), hist_moves(days=30)
+    cov = hist_start()
+    if not cov:
+        return "🔄 В історії ще немає записів."
+    cd7, cd30 = covered_days(7), covered_days(30)
+    c7, c30 = consumption(d7), consumption(d30)
+    adds = sum(max(0, h["new"] - h["old"]) for h in d7)
+    lines.append(f"🗓 Історія веде облік з {cov.strftime('%d.%m.%Y')} (охоплено {cd30} дн.). Витрата ≈ зменшення через ➖ і точну кількість.")
+    lines.append(f"За 7 дн.: витрата {sum(c7.values())} шт., надійшло/додано {adds} шт., чисто {net(d7):+d} шт.")
+    tot = df.groupby("code")["q"].sum().to_dict()
+    names = df.drop_duplicates("code").set_index("code")["name"].to_dict()
+    if c7:
+        lines.append("\n🔥 Найбільша витрата за 7 дн.:")
+        for c, v in sorted(c7.items(), key=lambda x: -x[1])[:8]:
+            per_day = v / max(1, cd7)
+            left = tot.get(c, 0)
+            when = f", вистачить ≈ {left / per_day:.0f} дн." if per_day > 0 and left > 0 else (", немає на залишку" if left == 0 else "")
+            lines.append(f"• {c} · {short_name(names.get(c, ''))[:28]} — {v} шт. (залишок {left}{when})")
+    moved30 = {h["code"] for h in d30}
+    dead = [c for c, q in tot.items() if q > 0 and c not in moved30]
+    if cd30 >= 7:
+        lines.append(f"\n💤 Без рухів за {cd30} дн.: {len(dead)} артикулів, {sum(tot[c] for c in dead)} шт.")
+        for c in sorted(dead, key=lambda c: -tot[c])[:8]:
+            lines.append(f"• {c} · {short_name(names.get(c, ''))[:28]} — {tot[c]} шт.")
+    else:
+        lines.append(f"\n💤 «Завмерлі» покажу, коли історія накопичить 7+ днів (зараз {cd30}).")
+    users = {}
+    for h in d7:
+        u = users.setdefault(h["user"], [0, 0, 0])
+        u[0] += 1
+        u[1] += max(0, h["new"] - h["old"])
+        u[2] += max(0, h["old"] - h["new"])
+    if users:
+        lines.append("\n👥 Хто що робив (7 дн.):")
+        for u, (n, p, m) in sorted(users.items(), key=lambda x: -x[1][0])[:6]:
+            lines.append(f"• {u}: {n} змін (+{p} / −{m})")
+    return "\n".join(lines)
+
+
+# ---- склад: розбивка ----
+def build_sklad_text(df, sk):
+    rows = compare_sklad(df, sk)
+    less = [r for r in rows if r["diff"] < 0 and r["table"] > 0]
+    more = [r for r in rows if r["diff"] > 0 and r["sklad"] > 0]
+    only_sk = [r for r in rows if r["table"] == 0 and r["sklad"] > 0]
+    only_tab = [r for r in rows if r["sklad"] <= 0 and r["table"] > 0]
+    text = build_zvirka_text(rows)
+    text += (f"\n📊 Недостача в таблиці: {sum(-r['diff'] for r in less + only_sk)} шт. "
+             f"({len(less) + len(only_sk)} арт.) · надлишок: {sum(r['diff'] for r in more + only_tab)} шт. ({len(more) + len(only_tab)} арт.)")
+    top = [r for r in rows if r["diff"] != 0][:5]
+    if top:
+        text += "\n\nТоп-5 розбіжностей і де лежить шина:\n"
+        for r in top:
+            text += f"• {r['code']} · {r['name'][:26]} — {r['diff']:+d}\n   {r['where'][:90]}\n"
+    return text
+
+
+# ---- вітрина (що не виставлено) ----
+def display_data(df, sk, key="zal"):
+    zal = location_rows(df, key)
+    shown = set(zal[zal["q"] > 0]["code"])
+    shown_all = set(zal["code"])
+    tot = df.groupby("code")["q"].sum().to_dict()
+    names = df.drop_duplicates("code").set_index("code")["name"].to_dict()
+    sizes = df.drop_duplicates("code").set_index("code")["size"].to_dict()
+    if sk:
+        stock = {c: v["qty"] for c, v in sk.items() if v["qty"] > 0}
+        for c, v in sk.items():
+            names.setdefault(c, v["name"])
+        source, source_in = "склад", "складі"
+    else:
+        stock = {c: q for c, q in tot.items() if q > 0}
+        source, source_in = "таблиця", "таблиці"
+    missing = []
+    for c, q in stock.items():
+        if c in shown:
+            continue
+        rows = code_rows(df, c)
+        where = "; ".join(f"{loc_label(r['pallet'])}: {int(r['q'])}" for _, r in rows.iterrows()
+                          if int(r["q"]) > 0 and r["pallet"].strip().lower() != SPECIAL_LOCS[key]) or "немає в таблиці"
+        missing.append({"code": c, "size": size_of(sizes.get(c, "")), "name": short_name(names.get(c, "")),
+                        "stock": q, "table": int(tot.get(c, 0)), "where": where})
+    missing.sort(key=lambda r: (size_sort_key(r["size"]), r["code"]))
+    zero_shown = [(r["code"], size_of(r["size"]), short_name(r["name"])) for _, r in zal.iterrows() if r["q"] == 0]
+    not_in_stock = [c for c in shown if c not in stock]
+    return {"label": SPECIAL_LOCS[key], "shown": shown, "shown_all": shown_all, "stock": stock, "missing": missing,
+            "zero_shown": zero_shown, "not_in_stock": not_in_stock, "zal": zal, "names": names, "source": source,
+            "source_in": source_in}
+
+
+def build_display_text(df, sk, key="zal"):
+    d = display_data(df, sk, key)
+    n_stock = len(d["stock"])
+    shown_in_stock = len([c for c in d["shown"] if c in d["stock"]])
+    label_in = {"вітрина зал": "вітрині зал", "вітрина вулиця": "вітрині вулиця", "палети фасад": "палетах фасаду"}.get(d["label"], d["label"])
+    lines = [f"🪟 {d['label'].capitalize()}: аналіз\n",
+             f"У залі: {len(d['zal'])} рядків, {int(d['zal']['q'].sum())} шт., {len(d['shown'])} артикулів у наявності.",
+             f"База для порівняння: {d['source']} ({n_stock} артикулів із залишком).",
+             f"Виставлено {shown_in_stock} з {n_stock} ({pct(shown_in_stock, n_stock)}), не виставлено {len(d['missing'])}.\n"]
+    if d["missing"]:
+        lines.append(f"❌ Не виставлені у {label_in} ({len(d['missing'])}):")
+        cur = None
+        for r in d["missing"]:
+            rad = radius_of(r["size"])
+            if rad != cur:
+                cur = rad
+                lines.append(f"\n— {rad} —")
+            lines.append(f"• {r['code']} · {r['size']} · {r['name'][:34]} — {r['stock']} шт. ({r['where'][:70]})")
+    else:
+        lines.append("✅ Усе, що є на складі, виставлено.")
+    if d["zero_shown"]:
+        lines.append(f"\n⚠️ Є в залі, але 0 шт. ({len(d['zero_shown'])}): " + "; ".join(f"{c} {s}" for c, s, n in d["zero_shown"][:12]))
+    if d["not_in_stock"]:
+        lines.append(f"\nℹ️ Є в залі, але немає на {d['source_in']} ({len(d['not_in_stock'])}): " + ", ".join(d["not_in_stock"][:12]))
+    return "\n".join(lines)
+
+
+def display_xlsx(df, sk, key="zal"):
+    from openpyxl import Workbook
+    st = _xlsx_styles()
+    d = display_data(df, sk, key)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Не виставлено"
+    rows = [[int(r["code"]), r["size"], r["name"], r["stock"], r["table"], r["where"]] for r in d["missing"]]
+    _write_sheet(ws, ["Код товару", "Розмір", "Модель", f"На {d['source_in']}, шт.", "У таблиці, шт.", "Де лежить зараз"], rows, [13, 12, 50, 12, 12, 60], st)
+    bio = io.BytesIO()
+    wb.save(bio)
+    bio.seek(0)
+    return bio
+
+
+# ---- огляд ----
+def build_overview(df, sk):
+    total = int(df["q"].sum())
+    tot = df.groupby("code")["q"].sum()
+    lines = [f"📊 Огляд складу · {datetime.now(KYIV).strftime('%d.%m.%Y')}\n",
+             f"📦 У таблиці: {total} шт. · {int((tot > 0).sum())} артикулів · {len(df)} рядків"]
+    d1, d7 = hist_moves(hours=24), hist_moves(days=7)
+    if d1 or d7:
+        n1, n7 = net(d1), net(d7)
+        lines.append(f"{arrow(n1)} За добу: {n1:+d} шт. (було {total - n1}) · {arrow(n7)} за тиждень: {n7:+d} (було {total - n7})")
+    low = int(((tot > 0) & (tot <= LOW_STOCK)).sum())
+    zero = int((tot <= 0).sum())
+    lines.append(f"🔻 Мінімальний залишок (≤ {LOW_STOCK}): {low} арт. · ⚠️ нулі: {zero} арт.")
+    if sk:
+        rows = compare_sklad(df, sk)
+        ok = len([r for r in rows if r["diff"] == 0])
+        s_sum = sum(r["sklad"] for r in rows)
+        lines.append(f"⚖️ Склад: {s_sum} шт. · збігається {ok} з {len(rows)} ({pct(ok, len(rows))}) · різниця {total - s_sum:+d} шт.")
+    q = quality_issues(df, sk)
+    lines.append(f"🧪 Якість даних: {quality_count(q)} зауважень" if quality_count(q) else "🧪 Якість даних: ✅ без зауважень")
+    cd30 = covered_days(30)
+    if cd30 >= 7:
+        moved = {h["code"] for h in hist_moves(days=30)}
+        dead = [c for c, v in tot.items() if v > 0 and c not in moved]
+        lines.append(f"💤 Без рухів за {cd30} дн.: {len(dead)} арт.")
+    lines.append("\nОбери розділ нижче 👇")
+    return "\n".join(lines)
+
+
+def stats_keyboard():
+    B = InlineKeyboardButton
+    return InlineKeyboardMarkup([
+        [B("📏 Розміри", callback_data="st_size"), B("🏭 Бренди", callback_data="st_brand")],
+        [B("📍 Локації", callback_data="st_loc"), B("🔄 Рух", callback_data="st_move")],
+        [B("🧪 Якість даних", callback_data="st_qual"), B("⚖️ Склад", callback_data="st_sklad")],
+        [B("🪟 Вітрина зал", callback_data="st_zal"), B("📈 Графіки", callback_data="st_chart")],
+        [B("📥 Excel-дашборд", callback_data="st_xls"), B("📋 Повна", callback_data="st_full")],
+    ])
+
+
+# ---- графіки ----
+def make_charts(df):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    out = []
+    en = enrich(df[df["q"] > 0])
+    colors = {SEASONS[0]: "#4472C4", SEASONS[1]: "#ED7D31", SEASONS[2]: "#70AD47", SEASONS[3]: "#A5A5A5"}
+    if not en.empty:
+        mat = en.groupby(["radius", "season"])["q"].sum().unstack(fill_value=0)
+        mat = mat.loc[sorted(mat.index, key=lambda r: (int(r[1:]) if r[1:].isdigit() else 99))]
+        fig, ax = plt.subplots(figsize=(8, 4.5))
+        bottom = None
+        for s in SEASONS:
+            if s in mat.columns:
+                vals = mat[s].values
+                ax.bar(mat.index, vals, bottom=bottom, label=s.split(' ', 1)[1], color=colors[s])
+                bottom = vals if bottom is None else bottom + vals
+        for i, tot_ in enumerate(mat.sum(axis=1).values):
+            ax.text(i, tot_ + 1, str(int(tot_)), ha="center", fontsize=9)
+        ax.set_title("Шини за радіусом і сезоном, шт.")
+        ax.legend()
+        fig.tight_layout()
+        bio = io.BytesIO(); fig.savefig(bio, format="png", dpi=130); bio.seek(0); plt.close(fig)
+        out.append((bio, "📏 Запаси за радіусом і сезоном"))
+        by = en.groupby("brand")["q"].sum().sort_values(ascending=True).tail(10)
+        fig, ax = plt.subplots(figsize=(8, 4.5))
+        total = by.sum() if len(by) else 1
+        ax.barh(by.index, by.values, color="#4472C4")
+        for i, v in enumerate(by.values):
+            ax.text(v + 0.5, i, f"{int(v)} ({100 * v / en['q'].sum():.0f}%)", va="center", fontsize=9)
+        ax.set_title("Бренди: шт. і частка від залишку")
+        fig.tight_layout()
+        bio = io.BytesIO(); fig.savefig(bio, format="png", dpi=130); bio.seek(0); plt.close(fig)
+        out.append((bio, "🏭 Бренди"))
+    series = daily_totals(df, 30)
+    if any(h for h in hist_moves(days=31)):
+        fig, ax = plt.subplots(figsize=(8, 4.2))
+        ax.plot([d for d, _ in series], [v for _, v in series], marker="o", color="#2F5597")
+        ax.set_title("Залишок за 30 днів (відновлено з історії змін)")
+        ax.grid(alpha=0.3)
+        fig.autofmt_xdate()
+        fig.tight_layout()
+        bio = io.BytesIO(); fig.savefig(bio, format="png", dpi=130); bio.seek(0); plt.close(fig)
+        out.append((bio, "📈 Динаміка залишку (враховує лише зміни через бота)"))
+    return out
+
+
+# ---- Excel-дашборд ----
+def dashboard_xlsx(df, sk):
+    from openpyxl import Workbook
+    st = _xlsx_styles()
+    wb = Workbook()
+    en = enrich(df[df["q"] > 0])
+    tot = df.groupby("code")["q"].sum()
+    names = df.drop_duplicates("code").set_index("code")["name"].to_dict()
+
+    ws = wb.active
+    ws.title = "Огляд"
+    total = int(df["q"].sum())
+    n1, n7 = net(hist_moves(hours=24)), net(hist_moves(days=7))
+    rows = [["Шин у таблиці, шт.", total], ["Артикулів із залишком", int((tot > 0).sum())], ["Рядків у таблиці", len(df)],
+            ["Зміна за добу, шт.", n1], ["Зміна за тиждень, шт.", n7],
+            [f"Артикулів із мінімальним залишком (≤ {LOW_STOCK})", int(((tot > 0) & (tot <= LOW_STOCK)).sum())],
+            ["Артикулів без залишку", int((tot <= 0).sum())]]
+    if sk:
+        cmp_rows = compare_sklad(df, sk)
+        rows += [["Склад, шт.", sum(r["sklad"] for r in cmp_rows)], ["Артикулів збігається зі складом", len([r for r in cmp_rows if r["diff"] == 0])],
+                 ["Артикулів з розбіжністю", len([r for r in cmp_rows if r["diff"] != 0])]]
+    rows.append(["Зауважень до якості даних", quality_count(quality_issues(df, sk))])
+    _write_sheet(ws, ["Показник", "Значення"], rows, [52, 16], st)
+
+    if not en.empty:
+        ws = wb.create_sheet("Розміри × сезон")
+        mat = en.groupby(["radius", "season"])["q"].sum().unstack(fill_value=0)
+        rads = sorted(mat.index, key=lambda r: (int(r[1:]) if r[1:].isdigit() else 99))
+        data = [[r] + [int(mat.loc[r][s]) if s in mat.columns else 0 for s in SEASONS] + [None] for r in rads]
+        _write_sheet(ws, ["Радіус"] + SEASONS + ["Разом"], data, [10, 12, 12, 12, 12, 12], st)
+        for i in range(2, len(data) + 2):
+            ws.cell(i, 6, f"=SUM(B{i}:E{i})")
+        last = len(data) + 1
+        ws.cell(last + 1, 1, "РАЗОМ").font = st["bold"]
+        for col in "BCDEF":
+            ws[f"{col}{last + 1}"] = f"=SUM({col}2:{col}{last})"
+            ws[f"{col}{last + 1}"].font = st["bold"]
+
+        ws = wb.create_sheet("Бренди")
+        by = en.groupby("brand").agg(q=("q", "sum"), n=("code", "nunique")).sort_values("q", ascending=False)
+        data = [[b, int(r["q"]), None, int(r["n"])] for b, r in by.iterrows()]
+        _write_sheet(ws, ["Бренд", "Шт.", "Частка", "Артикулів"], data, [20, 10, 10, 12], st)
+        last = len(data) + 1
+        for i in range(2, last + 1):
+            ws.cell(i, 3, f"=B{i}/SUM($B$2:$B${last})").number_format = "0.0%"
+
+    ws = wb.create_sheet("Локації")
+    locs = [f"палета {n}" for n in range(1, 45)] + list(SPECIAL_LOCS.values())
+    data = []
+    for lab in locs:
+        g = df[df["pallet"].apply(loc_label) == lab]
+        data.append([lab, len(g), int(g["q"].sum())])
+    _write_sheet(ws, ["Локація", "Рядків", "Шин, шт."], data, [22, 10, 12], st)
+    last = len(data) + 1
+    ws.cell(last + 1, 1, "РАЗОМ").font = st["bold"]
+    ws[f"B{last + 1}"], ws[f"C{last + 1}"] = f"=SUM(B2:B{last})", f"=SUM(C2:C{last})"
+
+    c7 = consumption(hist_moves(days=7))
+    cd7 = max(1, covered_days(7))
+    ws = wb.create_sheet("Рух 7 днів")
+    data = [[int(c), short_name(names.get(c, "")), v, None, int(tot.get(c, 0)), None] for c, v in sorted(c7.items(), key=lambda x: -x[1])]
+    _write_sheet(ws, ["Код", "Модель", "Витрата, шт.", "На день", "Залишок", "Вистачить, днів"], data or [["—", "немає витрати за період", 0, 0, 0, None]], [13, 48, 12, 10, 10, 14], st)
+    for i in range(2, len(data) + 2):
+        ws.cell(i, 4, f"=C{i}/{cd7}").number_format = "0.0"
+        ws.cell(i, 6, f'=IF(D{i}=0,"",E{i}/D{i})').number_format = "0"
+
+    ws = wb.create_sheet("Якість даних")
+    q = quality_issues(df, sk)
+    data = []
+    for c in q["conflicts"]: data.append(["Різні назви/розміри", int(c), short_name(names.get(c, ""))])
+    for c, p in q["dup"]: data.append(["Дубль на локації", int(c), loc_label(p)])
+    for r_ in q["blank"]: data.append(["Порожній рядок", "", f"рядок {r_}"])
+    for _, r in q["big"].iterrows(): data.append(["Підозріла кількість", int(r["code"]), f"рядок {int(r['row'])}: {int(r['q'])}"])
+    for c in q["not_in_sk"]: data.append(["Немає на складі", int(c), short_name(names.get(c, ""))])
+    for c in q["missing"]: data.append(["Немає в таблиці", int(c), short_name(sk[c]["name"])])
+    _write_sheet(ws, ["Проблема", "Код", "Деталі"], data or [["Проблем не знайдено", "", ""]], [26, 14, 56], st)
+
+    if sk:
+        ws = wb.create_sheet("Звірка")
+        cmp_rows = compare_sklad(df, sk)
+        data = [[int(r["code"]), r["name"], r["sklad"], r["table"], None, r["where"]] for r in cmp_rows]
+        _write_sheet(ws, ["Код", "Модель", "Склад", "Таблиця", "Різниця", "Де є"], data, [13, 50, 10, 10, 10, 60], st,
+                     bad_rows={i for i, r in enumerate(cmp_rows) if r["diff"] != 0})
+        for i in range(2, len(data) + 2):
+            ws.cell(i, 5, f"=D{i}-C{i}")
+    bio = io.BytesIO()
+    wb.save(bio)
+    bio.seek(0)
+    return bio
+
+
+
 # ----------------- ОФОРМЛЕННЯ: МЕНЮ І ДОВІДКА -----------------
 MENU = ReplyKeyboardMarkup(
     [["🔍 Пошук", "➕ Додати"], ["📦 Палети", "📊 Статистика"], ["⚖️ Звірка", "📋 Звіт"], ["📥 Експорт", "❓ Допомога"]],
@@ -991,7 +1618,8 @@ HELP_TEXT = (
     "➕ /add — додати шину (за артикулом; розмір і назву підтягну сам)\n"
     "📦 /pallet 27 — що лежить на палеті (або /pallet зал)\n"
     "🧮 /inventory 27 — інвентаризація палети по позиціях\n"
-    "📊 /stats — статистика\n"
+    "📊 /stats — огляд і розділи: розміри, бренди, локації, рух, якість даних, графіки, Excel-дашборд\n"
+    "🪟 /zal — що є на складі, але не виставлено у вітрині зал\n"
     "⚖️ /zvirka — звірка з аркушем «Склад» (онови його й повтори команду)\n"
     "📋 /report 7 — звіт за N днів, 🕘 /history — останні зміни\n"
     "📥 /export — вивантажити таблицю в Excel\n"
@@ -1060,11 +1688,87 @@ async def myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+BACK_KB = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Огляд", callback_data="st_ov")]])
+
+
 @guarded
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = await asyncio.to_thread(build_stats)
-    for part in chunk_text(text):
-        await update.message.reply_text(part, parse_mode="HTML")
+    df = await asyncio.to_thread(load_df, True)
+    sk = await asyncio.to_thread(load_sklad_safe)
+    text = await asyncio.to_thread(build_overview, df, sk)
+    await update.effective_message.reply_text(text, reply_markup=stats_keyboard())
+
+
+async def _send_parts(msg, text, kb=None, parse_mode=None):
+    parts = chunk_text(text)
+    for i, part in enumerate(parts):
+        await msg.reply_text(part, reply_markup=kb if i == len(parts) - 1 else None, parse_mode=parse_mode)
+
+
+@guarded
+async def stats_section(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    sec = q.data.split("_", 1)[1]
+    await q.answer("Готую…" if sec in ("chart", "xls") else None)
+    msg = q.message
+    df = await asyncio.to_thread(load_df)
+    sk = await asyncio.to_thread(load_sklad_safe)
+    if sec == "ov":
+        text = await asyncio.to_thread(build_overview, df, sk)
+        await msg.reply_text(text, reply_markup=stats_keyboard())
+    elif sec in ("size", "brand", "loc", "move", "qual"):
+        fn = {"size": build_sizes_text, "brand": build_brands_text, "loc": build_locations_text,
+              "move": build_movement_text, "qual": build_quality_text}[sec]
+        await _send_parts(msg, await asyncio.to_thread(fn, df, sk), BACK_KB)
+    elif sec == "sklad":
+        if not sk:
+            await msg.reply_text(ZVIRKA_SETUP.format(sheet=SKLAD_SHEET), reply_markup=BACK_KB)
+            return
+        sk = await asyncio.to_thread(load_sklad, True)
+        text = await asyncio.to_thread(build_sklad_text, df, sk)
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("📥 Excel зі звіркою", callback_data="zvx")],
+                                   [InlineKeyboardButton("⬅️ Огляд", callback_data="st_ov")]])
+        await _send_parts(msg, text, kb)
+    elif sec == "zal":
+        text = await asyncio.to_thread(build_display_text, df, sk, "zal")
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("📥 Excel зі списком", callback_data="zalx")],
+                                   [InlineKeyboardButton("⬅️ Огляд", callback_data="st_ov")]])
+        await _send_parts(msg, text, kb)
+    elif sec == "chart":
+        try:
+            charts = await asyncio.to_thread(make_charts, df)
+        except ImportError:
+            await msg.reply_text("📈 Для графіків додай matplotlib у requirements.txt.", reply_markup=BACK_KB)
+            return
+        for i, (bio, caption) in enumerate(charts):
+            await msg.reply_photo(photo=bio, caption=caption, reply_markup=BACK_KB if i == len(charts) - 1 else None)
+    elif sec == "xls":
+        bio = await asyncio.to_thread(dashboard_xlsx, df, sk)
+        name = f"дашборд_{datetime.now(KYIV).strftime('%d-%m-%Y')}.xlsx"
+        await msg.reply_document(document=bio, filename=name, caption="📥 Excel-дашборд (окремий файл, Google Таблицю не змінено)")
+    elif sec == "full":
+        text = await asyncio.to_thread(build_stats)
+        await _send_parts(msg, text, BACK_KB, parse_mode="HTML")
+
+
+@guarded
+async def zal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    df = await asyncio.to_thread(load_df, True)
+    sk = await asyncio.to_thread(load_sklad_safe, True)
+    text = await asyncio.to_thread(build_display_text, df, sk, "zal")
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("📥 Excel зі списком", callback_data="zalx")]])
+    await _send_parts(update.effective_message, text, kb)
+
+
+@guarded
+async def zal_excel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer("Готую файл…")
+    df = await asyncio.to_thread(load_df)
+    sk = await asyncio.to_thread(load_sklad_safe)
+    bio = await asyncio.to_thread(display_xlsx, df, sk, "zal")
+    await q.message.reply_document(document=bio, filename=f"не_виставлено_зал_{datetime.now(KYIV).strftime('%d-%m-%Y')}.xlsx",
+                                   caption="📥 Артикули, які є в наявності, але не виставлені у вітрині зал")
 
 
 @guarded
@@ -1143,6 +1847,15 @@ async def daily_job(context: ContextTypes.DEFAULT_TYPE):
         print(f"⚠️ Помилка ранкового звіту: {e}")
         return
     await notify_chats(context, text)
+    if datetime.now(KYIV).weekday() == 0:  # понеділок: підсумок тижня
+        try:
+            df = await asyncio.to_thread(load_df)
+            sk = await asyncio.to_thread(load_sklad_safe)
+            week = await asyncio.to_thread(build_overview, df, sk)
+            move = await asyncio.to_thread(build_movement_text, df, sk)
+            await notify_chats(context, "📅 Підсумок тижня\n\n" + week.replace("\n\nОбери розділ нижче 👇", "") + "\n\n" + move)
+        except Exception as e:
+            print(f"⚠️ Помилка тижневого звіту: {e}")
 
 
 # ----------------- ЛОКАЦІЇ ТА ПАЛЕТИ -----------------
@@ -1262,7 +1975,7 @@ async def undo_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return None
         ws.update_cell(row, 5, entry["old"])
         cache_set_qty(row, entry["old"])
-        log_to_history(q.from_user, entry["code"], "undo", cur, entry["old"])
+        log_to_history(q.from_user, entry["code"], "undo", cur, entry["old"], vals[0])
         return cur
 
     cur = await asyncio.to_thread(_undo)
@@ -1612,6 +2325,7 @@ async def inv_finish(context, inv):
     if not diffs:
         await context.bot.send_message(inv["chat"], f"✅ Інвентаризація {inv['label']}: перевірено {checked} позицій, розбіжностей немає.", reply_markup=MENU)
         inv["done"] = True
+        await asyncio.to_thread(log_inventory_done, inv["user"], inv["label"], checked, 0)
         return ConversationHandler.END
     lines = [f"🧮 Підсумок інвентаризації: {inv['label']}\nПеревірено: {checked} з {len(inv['items'])} позицій.\n\nРозбіжності:"]
     for it, new in diffs:
@@ -1638,7 +2352,8 @@ async def inv_begin(update: Update, context: ContextTypes.DEFAULT_TYPE, key):
         return ConversationHandler.END
     items = [{"row": int(r["row"]), "code": r["code"], "size": r["size"], "name": short_name(r["name"]), "old": int(r["q"])}
              for _, r in rows.iterrows()]
-    inv = {"key": key, "label": loc_name_of_key(key), "items": items, "idx": 0, "res": {}, "chat": chat_id, "msg": None}
+    inv = {"key": key, "label": loc_name_of_key(key), "items": items, "idx": 0, "res": {}, "chat": chat_id, "msg": None,
+           "user": update.effective_user}
     context.user_data["inv"] = inv
     await context.bot.send_message(chat_id, f"🧮 Починаємо інвентаризацію: {inv['label']}, {len(items)} позицій. /cancel — перервати без змін.")
     return await inv_ask(context, inv)
@@ -1705,7 +2420,8 @@ async def inv_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("❌ Зміни не застосовано.")
         return ConversationHandler.END
     try:
-        n = await asyncio.to_thread(apply_qty_batch, q.from_user, inv["diffs"], "inv")
+        n = await asyncio.to_thread(apply_qty_batch, q.from_user, inv["diffs"], "inv", inv["label"])
+        await asyncio.to_thread(log_inventory_done, q.from_user, inv["label"], len(inv["res"]), n)
         await q.edit_message_text(f"✅ Оновлено {n} позицій ({inv['label']}).")
         for _row, code, old, new in inv["diffs"]:
             if new < old:
@@ -1740,7 +2456,8 @@ async def post_init(app):
             ("add", "Додати шину"),
             ("pallet", "Що лежить на палеті"),
             ("inventory", "Інвентаризація палети"),
-            ("stats", "Статистика"),
+            ("stats", "Статистика й огляд"),
+            ("zal", "Вітрина зал: що не виставлено"),
             ("zvirka", "Звірка зі складом"),
             ("report", "Звіт за N днів"),
             ("history", "Останні зміни"),
@@ -1807,6 +2524,7 @@ def main():
     app.add_handler(inv_conv)
     app.add_handler(CommandHandler(["start", "help"], start))
     app.add_handler(CommandHandler("stats", stats_command))
+    app.add_handler(CommandHandler("zal", zal_command))
     app.add_handler(CommandHandler("pallet", pallet_command))
     app.add_handler(CommandHandler("zvirka", zvirka_command))
     app.add_handler(CommandHandler("report", report_command))
@@ -1821,6 +2539,8 @@ def main():
     app.add_handler(CallbackQueryHandler(pallet_pick, pattern=r"^pal_(\d+|zal|vul|fas)$"))
     app.add_handler(CallbackQueryHandler(pallets_back, pattern=r"^pals$"))
     app.add_handler(CallbackQueryHandler(zvirka_excel, pattern=r"^zvx$"))
+    app.add_handler(CallbackQueryHandler(stats_section, pattern=r"^st_[a-z]+$"))
+    app.add_handler(CallbackQueryHandler(zal_excel, pattern=r"^zalx$"))
     app.add_handler(MessageHandler(plain_text, handle_message))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
