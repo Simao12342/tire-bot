@@ -315,6 +315,8 @@ ACTION_TEXT = {
     "invdone": "Інвентаризація завершена",
     "move_out": "Переміщення (−)",
     "move_in": "Переміщення (+)",
+    "optdone": "Оптимізація складу",
+    "optundo": "Оптимізацію скасовано",
     "set": "Встановлено точну кількість",
 }
 
@@ -362,7 +364,7 @@ def read_history():
             continue
         out.append({"ts": ts, "user": r[1].strip(), "code": r[2].strip(), "action": r[3].strip(),
                     "old": to_int(r[4]), "new": to_int(r[5]), "loc": r[6].strip(),
-                    "done": r[3].strip() == ACTION_TEXT["invdone"]})
+                    "done": r[3].strip() in (ACTION_TEXT["invdone"], ACTION_TEXT["optdone"], ACTION_TEXT["optundo"])})
     with _lock:
         _hist_cache["rows"] = out
         _hist_cache["ts"] = _time.time()
@@ -929,7 +931,11 @@ def build_history_text(n=10):
         return "Історія змін порожня."
     lines = [f"🕘 Останні {len(items)} змін:\n"]
     for h in reversed(items):
-        if h.get("done"):
+        if h.get("done") and h["action"] == ACTION_TEXT["optdone"]:
+            lines.append(f"{h['ts'].strftime('%d.%m %H:%M')} · {h['user']} · 🧹 оптимізація палет: змінено рядків {h['old']}, звільнено палет {h['new']}")
+        elif h.get("done") and h["action"] == ACTION_TEXT["optundo"]:
+            lines.append(f"{h['ts'].strftime('%d.%m %H:%M')} · {h['user']} · ↩️ оптимізацію скасовано ({h['old']} рядків)")
+        elif h.get("done"):
             lines.append(f"{h['ts'].strftime('%d.%m %H:%M')} · {h['user']} · 🧮 інвентаризація {h['loc']}: перевірено {h['old']}, змінено {h['new']}")
         else:
             lines.append(f"{h['ts'].strftime('%d.%m %H:%M')} · {h['user']} · {h['code']} · {h['action']} · {h['old']} → {h['new']}")
@@ -1806,7 +1812,7 @@ def sales_xlsx(df, sk, asof):
 
 # ----------------- ОФОРМЛЕННЯ: МЕНЮ І ДОВІДКА -----------------
 MENU = ReplyKeyboardMarkup(
-    [["🔍 Пошук", "➕ Додати"], ["📦 Палети", "📊 Статистика"], ["⚖️ Звірка", "💰 Звірка продажів"], ["📋 Звіт", "📥 Експорт"], ["❓ Допомога"]],
+    [["🔍 Пошук", "➕ Додати"], ["📦 Палети", "📊 Статистика"], ["⚖️ Звірка", "💰 Звірка продажів"], ["📋 Звіт", "📥 Експорт"], ["❓ Допомога", "🧹 Оптимізація"]],
     resize_keyboard=True,
 )
 
@@ -1822,6 +1828,7 @@ HELP_TEXT = (
     "🧭 /unload — перевантажені палети й куди перенести надлишок\n"
     "🔁 кнопка «Перемістити» в картці шини — перенос між локаціями\n"
     "🧮 /plan — які палети час перевірити;  🛒 /zakupivlya — що закінчується\n"
+    "🧹 /optimize — оптимізація палет 1–44: об'єднати палети, зняти перевантаження, PDF/Excel і запис у таблицю\n"
     "🧮 /inventory 27 — інвентаризація палети по позиціях\n"
     "📊 /stats — огляд і розділи: розміри, бренди, локації, рух, якість даних, графіки, Excel-дашборд\n"
     "🪟 /zal — що є на складі, але не виставлено у вітрині зал\n"
@@ -2283,6 +2290,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await report_command(update, context)
     if text == "📥 Експорт":
         return await export_command(update, context)
+    if text == "🧹 Оптимізація":
+        return await optimize_command(update, context)
     if text == "❓ Допомога":
         await update.message.reply_text(HELP_TEXT, reply_markup=MENU)
         return
@@ -2742,6 +2751,7 @@ async def post_init(app):
             ("start", "Меню й довідка"),
             ("add", "Додати шину"),
             ("pallet", "Що лежить на палеті"),
+            ("optimize", "Оптимізація палет 1–44"),
             ("where", "Куди покласти шини"),
             ("unload", "Перевантажені палети"),
             ("plan", "Які палети перевірити"),
@@ -3223,6 +3233,483 @@ async def mv_timeout(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
+# ================= ОПТИМІЗАЦІЯ ПАЛЕТ 1–44 =================
+OPT_MODES = {"min": "🧰 Мінімум переміщень", "max": "📦 Максимум вільних палет"}
+OPT_SMALL = 4          # у режимі «мінімум» звільняємо лише палети з таким або меншим залишком
+OPT_UNDO_WINDOW = 3600  # секунд, поки діє «Скасувати оптимізацію»
+
+
+def opt_layout(df):
+    """{палета: {артикул: к-сть}} для палет 1–44 (лише к-сть > 0) та довідка по артикулах."""
+    lay = {str(n): {} for n in range(1, 45)}
+    for _, r in df.iterrows():
+        p = r["pallet"].strip()
+        if p in lay and r["q"] > 0:
+            lay[p][r["code"]] = lay[p].get(r["code"], 0) + int(r["q"])
+    info = {}
+    for _, r in df.drop_duplicates("code").iterrows():
+        info[r["code"]] = {"size": r["size"], "name": r["name"]}
+    return lay, info
+
+
+def opt_fingerprint(df):
+    import hashlib
+    rows = sorted((int(r["row"]), r["pallet"].strip(), r["code"], int(r["q"])) for _, r in df.iterrows()
+                  if r["pallet"].strip().isdigit() and 1 <= int(r["pallet"].strip()) <= 44)
+    return hashlib.md5(repr(rows).encode("utf-8")).hexdigest()
+
+
+def _tot(items):
+    return sum(items.values())
+
+
+def _place(sim, info, code, qty, exclude, allow_empty=False):
+    """Розкладає qty шт. артикула по інших палетах (best-fit: спершу з тим самим артикулом/розміром/брендом)."""
+    key_size = size_of(info[code]["size"])
+    key_br = (brand_of(info[code]["name"]), radius_of(info[code]["size"]))
+
+    def score(t):
+        items = sim[t]
+        if code in items:
+            return 0
+        if any(size_of(info[c2]["size"]) == key_size for c2 in items):
+            return 1
+        if any((brand_of(info[c2]["name"]), radius_of(info[c2]["size"])) == key_br for c2 in items):
+            return 2
+        return 3
+
+    placed, left = 0, qty
+    while left > 0:
+        cands = []
+        for t, items in sim.items():
+            if t in exclude:
+                continue
+            tot = _tot(items)
+            free = PALLET_MAX - tot
+            if free <= 0 or (tot == 0 and not allow_empty):
+                continue
+            cands.append((t, free, score(t)))
+        if not cands:
+            break
+        fits = [c for c in cands if c[1] >= left]
+        if fits:
+            t, free, sc = min(fits, key=lambda c: (c[2], c[1] - left, int(c[0])))
+            put = left
+        else:
+            t, free, sc = max(cands, key=lambda c: (c[1], -c[2], -int(c[0])))
+            put = free
+        sim[t][code] = sim[t].get(code, 0) + put
+        placed += put
+        left -= put
+    return placed
+
+
+def _fix_overloaded(sim, info):
+    for p in sorted(sim, key=int):
+        excess = _tot(sim[p]) - PALLET_MAX
+        if excess <= 0:
+            continue
+        for code, q in sorted(sim[p].items(), key=lambda kv: kv[1]):
+            if excess <= 0:
+                break
+            take = min(q, excess)
+            placed = _place(sim, info, code, take, {p}, allow_empty=True)
+            if placed:
+                sim[p][code] -= placed
+                if sim[p][code] <= 0:
+                    del sim[p][code]
+                excess -= placed
+
+
+def _free_pallets(sim, info, mode):
+    freed = []
+    while True:
+        order = sorted([p for p in sim if _tot(sim[p]) > 0], key=lambda p: (_tot(sim[p]), int(p)))
+        progress = False
+        for p in order:
+            if mode == "min" and _tot(sim[p]) > OPT_SMALL:
+                break
+            trial = {k: dict(v) for k, v in sim.items()}
+            ok = True
+            for code, q in sorted(trial[p].items(), key=lambda kv: -kv[1]):
+                if _place(trial, info, code, q, {p}) < q:
+                    ok = False
+                    break
+            if ok:
+                trial[p] = {}
+                sim.clear()
+                sim.update(trial)
+                freed.append(p)
+                progress = True
+                break
+        if not progress:
+            break
+    return freed
+
+
+def net_moves(orig, final):
+    """Чисті переміщення: що, скільки, звідки, куди (без проміжних кроків)."""
+    codes = {c for p in orig.values() for c in p} | {c for p in final.values() for c in p}
+    out = []
+    for c in sorted(codes):
+        src = [[p, orig[p].get(c, 0) - final[p].get(c, 0)] for p in sorted(orig, key=int) if orig[p].get(c, 0) > final[p].get(c, 0)]
+        dst = [[p, final[p].get(c, 0) - orig[p].get(c, 0)] for p in sorted(orig, key=int) if final[p].get(c, 0) > orig[p].get(c, 0)]
+        i = j = 0
+        while i < len(src) and j < len(dst):
+            q = min(src[i][1], dst[j][1])
+            out.append({"code": c, "qty": q, "from": src[i][0], "to": dst[j][0]})
+            src[i][1] -= q
+            dst[j][1] -= q
+            if src[i][1] == 0:
+                i += 1
+            if dst[j][1] == 0:
+                j += 1
+    out.sort(key=lambda m: (int(m["from"]), int(m["to"]), m["code"]))
+    return out
+
+
+def optimize_plan(df, mode="min"):
+    orig, info = opt_layout(df)
+    sim = {p: dict(v) for p, v in orig.items()}
+    _fix_overloaded(sim, info)
+    freed = _free_pallets(sim, info, mode)
+    moves = net_moves(orig, sim)
+    used = lambda lay: len([p for p in lay if _tot(lay[p]) > 0])
+    over = lambda lay: sorted([int(p) for p in lay if _tot(lay[p]) > PALLET_MAX])
+    total = sum(_tot(v) for v in orig.values())
+    return {"mode": mode, "orig": orig, "final": sim, "info": info, "moves": moves, "freed": sorted(freed, key=int),
+            "fp": opt_fingerprint(df), "total": total, "used_before": used(orig), "used_after": used(sim),
+            "over_before": over(orig), "over_after": over(sim), "min_pallets": math.ceil(total / PALLET_MAX) if total else 0,
+            "units": sum(m["qty"] for m in moves)}
+
+
+def plan_text(plan, limit=12):
+    info = plan["info"]
+    lines = [f"🧹 Оптимізація палет 1–44 · {OPT_MODES[plan['mode']]}\n",
+             f"Було: зайнято {plan['used_before']} палет, перевантажених {len(plan['over_before'])}"
+             + (f" ({', '.join(str(n) for n in plan['over_before'][:12])})" if plan["over_before"] else ""),
+             f"Стане: зайнято {plan['used_after']} палет, перевантажених {len(plan['over_after'])}"
+             + (f" ({', '.join(str(n) for n in plan['over_after'])})" if plan["over_after"] else ""),
+             f"Звільниться палет: {len(plan['freed'])}" + (f" → №{', №'.join(plan['freed'])}" if plan["freed"] else ""),
+             f"Перенести: {plan['units']} шт., {len(plan['moves'])} операцій",
+             f"Теоретичний мінімум: {plan['min_pallets']} палет ({plan['total']} шт. ÷ {PALLET_MAX})"]
+    if not plan["moves"]:
+        lines.append("\n✅ Нічого переносити не треба: палети вже в межах ліміту.")
+        return "\n".join(lines)
+    lines.append("\nПерші кроки:")
+    for m in plan["moves"][:limit]:
+        i = info.get(m["code"], {"size": "", "name": ""})
+        lines.append(f"• палета {m['from']} → {m['to']}: {m['qty']} шт. {m['code']} · {i['size']} · {short_name(i['name'])[:22]}")
+    if len(plan["moves"]) > limit:
+        lines.append(f"… і ще {len(plan['moves']) - limit} операцій. Повний список у PDF або Excel.")
+    if plan["over_after"]:
+        lines.append("\n⚠️ Не всі перевантаження вдалося зняти: на палетах 1–44 не вистачає вільного місця.")
+    return "\n".join(lines)
+
+
+def plan_changes(df, plan):
+    """Що змінити в таблиці: updates [(рядок, було, стане, палета, артикул)], new_rows [(палета, артикул, розмір, назва, к-сть)]."""
+    rows_by = {}
+    for _, r in df.sort_values("row").iterrows():
+        p = r["pallet"].strip()
+        if p in plan["orig"]:
+            rows_by.setdefault((p, r["code"]), []).append((int(r["row"]), int(r["q"])))
+    updates, new_rows = [], []
+    for p in sorted(plan["orig"], key=int):
+        for c in sorted(set(plan["orig"][p]) | set(plan["final"][p])):
+            o, f = plan["orig"][p].get(c, 0), plan["final"][p].get(c, 0)
+            if o == f:
+                continue
+            rows = rows_by.get((p, c))
+            if rows:
+                row0, q0 = rows[0]
+                updates.append((row0, q0, f, p, c))
+                for rr, qq in rows[1:]:
+                    if qq != 0:
+                        updates.append((rr, qq, 0, p, c))
+            else:
+                new_rows.append((p, c, plan["info"][c]["size"], plan["info"][c]["name"], f))
+    return updates, new_rows
+
+
+def apply_plan(user, df, plan):
+    updates, new_rows = plan_changes(df, plan)
+    ws = get_worksheet()
+    data = [{"range": f"E{row}", "values": [[new]]} for row, _old, new, _p, _c in updates]
+    start = end = None
+    if new_rows:
+        start = max(len(ws.col_values(2)) + 1, FIRST_DATA_ROW)
+        end = start + len(new_rows) - 1
+        if ws.row_count < end:
+            ws.add_rows(end - ws.row_count)
+        data.append({"range": f"A{start}:E{end}", "values": [[p, c, size, name, q] for p, c, size, name, q in new_rows]})
+    if not data:
+        return {"updates": [], "new_rows": [], "start": None, "end": None, "ts": _time.time()}
+    ws.batch_update(data, value_input_option="USER_ENTERED")  # один запит: або все записалось, або нічого
+    invalidate_cache()
+    ts, who = now_str(), user_label(user)
+    hist = [[ts, who, c, ACTION_TEXT["move_out"] if new < old else ACTION_TEXT["move_in"], old, new, loc_label(p)] for row, old, new, p, c in updates]
+    hist += [[ts, who, c, ACTION_TEXT["move_in"], 0, q, loc_label(p)] for p, c, size, name, q in new_rows]
+    hist.append([ts, who, "—", ACTION_TEXT["optdone"], len(updates) + len(new_rows), len(plan["freed"]), "палети 1–44"])
+    try:
+        _append_history(hist)
+    except Exception as e:
+        print(f"⚠️ Помилка запису в історію: {e}")
+    return {"updates": updates, "new_rows": new_rows, "start": start, "end": end, "ts": _time.time()}
+
+
+def undo_plan(user, entry):
+    ws = get_worksheet()
+    df = load_df(True)
+    cur = {int(r["row"]): int(r["q"]) for _, r in df.iterrows()}
+    for row, old, new, p, c in entry["updates"]:
+        if cur.get(row) != new:
+            raise ValueError(f"рядок {row} змінювали після оптимізації")
+    if entry["start"]:
+        for i, (p, c, size, name, q) in enumerate(entry["new_rows"]):
+            if cur.get(entry["start"] + i) != q:
+                raise ValueError(f"рядок {entry['start'] + i} змінювали після оптимізації")
+    data = [{"range": f"E{row}", "values": [[old]]} for row, old, new, p, c in entry["updates"]]
+    if entry["start"]:
+        ws.batch_clear([f"A{entry['start']}:E{entry['end']}"])
+    if data:
+        ws.batch_update(data, value_input_option="USER_ENTERED")
+    invalidate_cache()
+    try:
+        ts, who = now_str(), user_label(user)
+        _append_history([[ts, who, "—", ACTION_TEXT["optundo"], len(entry["updates"]) + len(entry["new_rows"]), 0, "палети 1–44"]])
+    except Exception as e:
+        print(f"⚠️ Помилка запису в історію: {e}")
+
+
+def plan_pdf(plan):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import textwrap
+    from matplotlib.backends.backend_pdf import PdfPages
+    info = plan["info"]
+    bio = io.BytesIO()
+    with PdfPages(bio) as pdf:
+        fig = plt.figure(figsize=(8.27, 11.69))
+        fig.text(0.06, 0.94, "Оптимізація складу: палети 1–44", fontsize=22, fontweight="bold")
+        fig.text(0.06, 0.91, f"{OPT_MODES[plan['mode']].split(' ', 1)[1]} · {datetime.now(KYIV).strftime('%d.%m.%Y %H:%M')} · ліміт {PALLET_MAX} шт. на палету", fontsize=10, color="#444444")
+        body = [f"Було: зайнято {plan['used_before']} палет, перевантажених {len(plan['over_before'])} {plan['over_before'] or ''}",
+                f"Стане: зайнято {plan['used_after']} палет, перевантажених {len(plan['over_after'])}",
+                f"Звільниться палет: {len(plan['freed'])} " + (", ".join("№" + p for p in plan["freed"]) if plan["freed"] else ""),
+                f"Перенести: {plan['units']} шт., {len(plan['moves'])} операцій",
+                f"Теоретичний мінімум: {plan['min_pallets']} палет ({plan['total']} шт. ÷ {PALLET_MAX})", "",
+                "Як користуватись: у розділі «Що перенести» відмічай виконане (☐). Після завершення онови таблицю кнопкою «Застосувати» в боті",
+                "(або переносьте через бот по одній позиції кнопкою «Перемістити»)."]
+        y = 0.85
+        for line in body:
+            for part in textwrap.wrap(str(line), 95) or [""]:
+                fig.text(0.06, y, part, fontsize=11)
+                y -= 0.026
+        pdf.savefig(fig)
+        plt.close(fig)
+        moves = plan["moves"]
+        per_page = 30
+        for pg in range(max(1, math.ceil(len(moves) / per_page))):
+            chunk = moves[pg * per_page:(pg + 1) * per_page]
+            fig = plt.figure(figsize=(8.27, 11.69))
+            ax = fig.add_axes([0.04, 0.05, 0.92, 0.84])
+            ax.axis("off")
+            fig.text(0.06, 0.93, "Що перенести", fontsize=18, fontweight="bold")
+            if chunk:
+                cells = [["☐", m["code"], info.get(m["code"], {}).get("size", ""), short_name(info.get(m["code"], {}).get("name", ""))[:30],
+                          str(m["qty"]), m["from"], m["to"]] for m in chunk]
+                tbl = ax.table(cellText=cells, colLabels=["", "Артикул", "Розмір", "Модель", "К-сть", "Звідки", "Куди"],
+                               colWidths=[0.04, 0.13, 0.12, 0.38, 0.08, 0.1, 0.1], loc="upper center", cellLoc="left")
+                tbl.auto_set_font_size(False)
+                tbl.set_fontsize(9)
+                tbl.scale(1, 1.8)
+                for (r_i, c_i), cell in tbl.get_celld().items():
+                    if r_i == 0:
+                        cell.set_facecolor("#1F3864")
+                        cell.set_text_props(color="white", fontweight="bold")
+            fig.text(0.9, 0.02, f"{pg + 1}", fontsize=9)
+            pdf.savefig(fig)
+            plt.close(fig)
+        lines = []
+        for p in sorted(plan["final"], key=int):
+            items = plan["final"][p]
+            tot = _tot(items)
+            head = f"Палета {p} ({tot}/{PALLET_MAX}): " if tot else f"Палета {p}: ВІЛЬНА"
+            body_ = " · ".join(f"{c}×{q}" for c, q in sorted(items.items(), key=lambda kv: -kv[1]))
+            lines.extend(textwrap.wrap(head + body_, 100, subsequent_indent="      ") or [head])
+        per_page = 52
+        for pg in range(max(1, math.ceil(len(lines) / per_page))):
+            fig = plt.figure(figsize=(8.27, 11.69))
+            fig.text(0.06, 0.95, "Розкладка після оптимізації", fontsize=18, fontweight="bold")
+            y = 0.91
+            for ln in lines[pg * per_page:(pg + 1) * per_page]:
+                fig.text(0.06, y, ln, fontsize=8.5)
+                y -= 0.0165
+            pdf.savefig(fig)
+            plt.close(fig)
+    bio.seek(0)
+    return bio
+
+
+def plan_xlsx(plan):
+    from openpyxl import Workbook
+    st = _xlsx_styles()
+    info = plan["info"]
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Що перенести"
+    rows = [[int(m["code"]), info.get(m["code"], {}).get("size", ""), short_name(info.get(m["code"], {}).get("name", "")), m["qty"], int(m["from"]), int(m["to"]), ""] for m in plan["moves"]]
+    _write_sheet(ws, ["Код товару", "Розмір", "Модель", "К-сть", "Звідки (палета)", "Куди (палета)", "Виконано"], rows or [["—", "", "переносити нічого", 0, "", "", ""]], [13, 12, 48, 8, 14, 14, 12], st)
+    last = len(rows) + 1
+    ws.cell(last + 1, 3, "РАЗОМ перенести, шт.").font = st["bold"]
+    ws.cell(last + 1, 4, f"=SUM(D2:D{last})").font = st["bold"]
+    ws2 = wb.create_sheet("Розкладка після")
+    data = []
+    for p in sorted(plan["final"], key=int):
+        for c, q in sorted(plan["final"][p].items(), key=lambda kv: -kv[1]):
+            data.append([int(p), int(c), info.get(c, {}).get("size", ""), short_name(info.get(c, {}).get("name", "")), q])
+    _write_sheet(ws2, ["Палета", "Код товару", "Розмір", "Модель", "К-сть"], data or [["—", "", "", "", 0]], [10, 13, 12, 48, 8], st)
+    ws3 = wb.create_sheet("Палети (було-стане)")
+    data = [[int(p), _tot(plan["orig"][p]), _tot(plan["final"][p]), None] for p in sorted(plan["orig"], key=int)]
+    _write_sheet(ws3, ["Палета", "Було, шт.", "Стане, шт.", "Статус"], data, [10, 12, 12, 22], st)
+    for i in range(2, len(data) + 2):
+        ws3.cell(i, 4, f'=IF(C{i}=0,"вільна",IF(C{i}>{PALLET_MAX},"перевантажена",IF(C{i}=B{i},"без змін","змінюється")))')
+    n = len(data) + 1
+    ws3.cell(n + 1, 1, "РАЗОМ").font = st["bold"]
+    ws3[f"B{n + 1}"], ws3[f"C{n + 1}"] = f"=SUM(B2:B{n})", f"=SUM(C2:C{n})"
+    bio = io.BytesIO()
+    wb.save(bio)
+    bio.seek(0)
+    return bio
+
+
+# ---------- Telegram ----------
+OPT_INTRO = (
+    f"🧹 Оптимізація палет 1–44 (ліміт {PALLET_MAX} шт.)\n\n"
+    "Бот запропонує, що кудись перенести, щоб прибрати перевантаження й звільнити палети. Вітрина зал, вулиця й фасад не чіпаються.\n\n"
+    "🧰 Мінімум переміщень: знімає перевантаження й звільняє лише майже порожні палети (до 4 шт.).\n"
+    "📦 Максимум вільних палет: об'єднує все, що можна, зате переносить більше.\n\n"
+    "Потім можна вивантажити план у PDF або Excel і, якщо влаштовує, однією кнопкою записати зміни в таблицю."
+)
+
+
+def opt_keyboard():
+    B = InlineKeyboardButton
+    return InlineKeyboardMarkup([[B(OPT_MODES["min"], callback_data="opt_min")], [B(OPT_MODES["max"], callback_data="opt_max")],
+                                 [B("❌ Закрити", callback_data="opt_close")]])
+
+
+def opt_plan_keyboard(plan):
+    B = InlineKeyboardButton
+    rows = [[B("📄 PDF", callback_data="opt_pdf"), B("📥 Excel", callback_data="opt_xls")]]
+    if plan["moves"]:
+        rows.append([B("✅ Застосувати до таблиці", callback_data="opt_apply")])
+    rows.append([B("🔄 Інший режим", callback_data="opt_menu")])
+    return InlineKeyboardMarkup(rows)
+
+
+@guarded
+async def optimize_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.effective_message.reply_text(OPT_INTRO, reply_markup=opt_keyboard())
+
+
+@guarded
+async def optimize_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    act = q.data.split("_", 1)[1]
+    msg = q.message
+    if act == "close":
+        await q.answer()
+        await q.edit_message_text("Закрито.")
+        return
+    if act == "menu":
+        await q.answer()
+        await msg.reply_text(OPT_INTRO, reply_markup=opt_keyboard())
+        return
+    if act in ("min", "max"):
+        await q.answer("Рахую…")
+        df = await asyncio.to_thread(load_df, True)
+        plan = await asyncio.to_thread(optimize_plan, df, act)
+        context.user_data["opt"] = plan
+        await msg.reply_text(plan_text(plan), reply_markup=opt_plan_keyboard(plan))
+        return
+    plan = context.user_data.get("opt")
+    if act in ("pdf", "xls"):
+        await q.answer("Готую файл…")
+        if not plan:
+            await msg.reply_text("План застарів. Запусти /optimize ще раз.")
+            return
+        stamp = datetime.now(KYIV).strftime("%d-%m-%Y")
+        if act == "pdf":
+            try:
+                bio = await asyncio.to_thread(plan_pdf, plan)
+            except ImportError:
+                await msg.reply_text("📄 Для PDF додай matplotlib у requirements.txt.")
+                return
+            await msg.reply_document(document=bio, filename=f"оптимізація_палет_{stamp}.pdf", caption="📄 План оптимізації складу")
+        else:
+            bio = await asyncio.to_thread(plan_xlsx, plan)
+            await msg.reply_document(document=bio, filename=f"оптимізація_палет_{stamp}.xlsx", caption="📥 План оптимізації складу")
+        return
+    if act == "apply":
+        await q.answer()
+        if not plan or not plan["moves"]:
+            await msg.reply_text("Немає плану для застосування. Запусти /optimize ще раз.")
+            return
+        df = await asyncio.to_thread(load_df, True)
+        upd, new_rows = await asyncio.to_thread(plan_changes, df, plan)
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Так, переписати", callback_data="opt_ok"),
+                                    InlineKeyboardButton("❌ Ні", callback_data="opt_close")]])
+        await msg.reply_text(
+            f"⚠️ Застосувати оптимізацію до таблиці?\n\nБуде змінено кількість у {len(upd)} рядках і додано {len(new_rows)} нових рядків "
+            f"({plan['units']} шт. переміщується, звільниться палет: {len(plan['freed'])}).\n"
+            "Перед записом я надішлю резервну копію таблиці в Excel. Скасувати можна кнопкою протягом години, якщо ці рядки тим часом ніхто не змінить.\n"
+            "Фізично шини переносити треба відповідно до плану (PDF).", reply_markup=kb)
+        return
+    if act == "ok":
+        await q.answer("Записую…")
+        if not plan:
+            await q.edit_message_text("План застарів. Запусти /optimize ще раз.")
+            return
+        df = await asyncio.to_thread(load_df, True)
+        if opt_fingerprint(df) != plan["fp"]:
+            await q.edit_message_text("🔄 Таблиця змінилась після розрахунку плану. Запусти /optimize ще раз, щоб не перезаписати чужі правки.")
+            context.user_data.pop("opt", None)
+            return
+        backup = await asyncio.to_thread(table_xlsx, df)
+        await msg.reply_document(document=backup, filename=f"резерв_таблиці_{datetime.now(KYIV).strftime('%d-%m-%Y_%H-%M')}.xlsx",
+                                 caption="💾 Резервна копія таблиці перед оптимізацією")
+        res = await asyncio.to_thread(apply_plan, q.from_user, df, plan)
+        df2 = await asyncio.to_thread(load_df, True)
+        lay2, _ = await asyncio.to_thread(opt_layout, df2)
+        bad = [p for p in plan["final"] if _tot(plan["final"][p]) != _tot(lay2[p])]
+        res["uid"] = q.from_user.id
+        context.application.bot_data["opt_undo"] = res
+        context.user_data.pop("opt", None)
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Скасувати оптимізацію", callback_data="opt_undo")]])
+        text = f"✅ Таблицю оновлено: змінено {len(res['updates'])} рядків, додано {len(res['new_rows'])} нових."
+        text += "\nПеревірка після запису: " + ("усі палети збігаються з планом ✔" if not bad else f"⚠️ не збігаються палети: {', '.join(bad[:10])}")
+        text += "\nРядки з 0 шт. після переміщення лишились у таблиці, їх можна прибрати вручну."
+        await q.edit_message_text(text, reply_markup=kb)
+        return
+    if act == "undo":
+        entry = context.application.bot_data.get("opt_undo")
+        if not entry or _time.time() - entry.get("ts", 0) > OPT_UNDO_WINDOW:
+            await q.answer("Скасувати вже не можна (минула година або перезапуск бота). Відновлюй з резервної копії.", show_alert=True)
+            return
+        await q.answer("Відміняю…")
+        try:
+            await asyncio.to_thread(undo_plan, q.from_user, entry)
+        except ValueError as e:
+            await q.message.reply_text(f"⚠️ Скасувати автоматично не вдалося: {e}. Відновлюй з резервної копії.")
+            return
+        context.application.bot_data.pop("opt_undo", None)
+        await q.edit_message_text("↩️ Оптимізацію скасовано: кількості повернуто, додані рядки очищено.")
+        return
+
+
+
 # ----------------- ЗАПУСК -----------------
 def main():
     if TELEGRAM_BOT_TOKEN == "ВСТАВ_СЮДИ_ТОКЕН":
@@ -3231,7 +3718,7 @@ def main():
 
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
     plain_text = filters.TEXT & ~filters.COMMAND
-    MENU_RE = r"^(🔍 Пошук|➕ Додати|📦 Палети|📊 Статистика|⚖️ Звірка|💰 Звірка продажів|📋 Звіт|📥 Експорт|❓ Допомога)$"
+    MENU_RE = r"^(🔍 Пошук|➕ Додати|📦 Палети|📊 Статистика|⚖️ Звірка|💰 Звірка продажів|📋 Звіт|📥 Експорт|❓ Допомога|🧹 Оптимізація)$"
     conv_text = plain_text & ~filters.Regex(MENU_RE)
 
     add_conv = ConversationHandler(
@@ -3297,6 +3784,7 @@ def main():
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("zal", zal_command))
     app.add_handler(CommandHandler("where", where_command))
+    app.add_handler(CommandHandler(["optimize", "optymizatsiya"], optimize_command))
     app.add_handler(CommandHandler("unload", unload_command))
     app.add_handler(CommandHandler("plan", plan_command))
     app.add_handler(CommandHandler("zakupivlya", order_command))
@@ -3320,6 +3808,7 @@ def main():
     app.add_handler(CallbackQueryHandler(zal_excel, pattern=r"^zalx$"))
     app.add_handler(CallbackQueryHandler(pallet_pdf_cb, pattern=r"^pdf_(\d+|zal|vul|fas)$"))
     app.add_handler(CallbackQueryHandler(unload_pick, pattern=r"^unl_\d+$"))
+    app.add_handler(CallbackQueryHandler(optimize_cb, pattern=r"^opt_[a-z]+$"))
     app.add_handler(MessageHandler(plain_text, handle_message))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
