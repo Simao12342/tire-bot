@@ -8,6 +8,7 @@ import asyncio
 import base64
 import difflib
 import math
+import hashlib
 import threading
 import time as _time
 from datetime import datetime, timedelta, time as dtime
@@ -318,16 +319,62 @@ ACTION_TEXT = {
     "optdone": "Оптимізація складу",
     "optundo": "Оптимізацію скасовано",
     "set": "Встановлено точну кількість",
+    "cleanup": "Видалено рядок з 0 шт.",
 }
 
 
+_state = {"cleaned": False}
+
+
+def loc_key_of(pallet):
+    p = str(pallet).strip()
+    if p.isdigit():
+        return p
+    low = p.lower()
+    for k, v in SPECIAL_LOCS.items():
+        if low == v.lower():
+            return k
+    return "x"
+
+
+def quick_name(code):
+    """(розмір, назва) артикула без запитів до Google: з кешу таблиці, історії чи складу."""
+    with _lock:
+        df = _cache["df"]
+    if df is not None:
+        m = df[df["code"] == code]
+        if not m.empty:
+            pos = m[m["q"] > 0]
+            r = (pos if not pos.empty else m).iloc[0]
+            return (r["size"] or _size_from_name(r["name"])), r["name"]
+    for h in reversed(_hist_cache["rows"] or []):
+        if h["code"] == code and h.get("name"):
+            return (h.get("size") or _size_from_name(h["name"])), h["name"]
+    sk = (_sklad_cache.get("data") or {}).get(code)
+    if sk and sk.get("name"):
+        return _size_from_name(sk["name"]), sk["name"]
+    return "", ""
+
+
 def _append_history(rows):
-    """Дописує рядки в «Історію» (7 колонок, а якщо аркуш вужчий — 6)."""
+    """Дописує рядки в «Історію»: час, хто, артикул, дія, було, стало, локація, назва, розмір.
+    Назву й розмір додає сам (з таблиці, історії чи складу); якщо аркуш вужчий, пише менше колонок."""
+    full = []
+    for row in rows:
+        r = list(row) + [""] * (7 - len(row)) if len(row) < 7 else list(row)
+        if len(r) < 9:
+            code = str(r[2]).strip()
+            size, name = quick_name(code) if code.isdigit() else ("", "")
+            r = r[:7] + [name, size]
+        full.append(r)
     history = get_spreadsheet().worksheet("Історія")
-    try:
-        history.append_rows(rows, value_input_option="USER_ENTERED")
-    except Exception:
-        history.append_rows([r[:6] for r in rows], value_input_option="USER_ENTERED")
+    for width in (9, 7, 6):
+        try:
+            history.append_rows([r[:width] for r in full], value_input_option="USER_ENTERED")
+            break
+        except Exception:
+            if width == 6:
+                raise
     _hist_cache["ts"] = 0.0
 
 
@@ -357,14 +404,14 @@ def read_history():
         return []
     out = []
     for r in data[1:]:
-        r = (list(r) + [""] * 7)[:7]
+        r = (list(r) + [""] * 9)[:9]
         try:
             ts = datetime.strptime(r[0].strip(), "%Y-%m-%d %H:%M:%S")
         except Exception:
             continue
         out.append({"ts": ts, "user": r[1].strip(), "code": r[2].strip(), "action": r[3].strip(),
-                    "old": to_int(r[4]), "new": to_int(r[5]), "loc": r[6].strip(),
-                    "done": r[3].strip() in (ACTION_TEXT["invdone"], ACTION_TEXT["optdone"], ACTION_TEXT["optundo"])})
+                    "old": to_int(r[4]), "new": to_int(r[5]), "loc": r[6].strip(), "name": r[7].strip(), "size": r[8].strip(),
+                    "done": r[3].strip() in (ACTION_TEXT["invdone"], ACTION_TEXT["optdone"], ACTION_TEXT["optundo"], ACTION_TEXT["cleanup"])})
     with _lock:
         _hist_cache["rows"] = out
         _hist_cache["ts"] = _time.time()
@@ -372,10 +419,13 @@ def read_history():
 
 
 # ----------------- ЗАПИС У ТАБЛИЦЮ -----------------
-def change_qty(user, row, action, value=None, log=True):
+def change_qty(user, row, action, value=None, log=True, expect=None):
     ws = get_worksheet()
     vals = (ws.row_values(row) + [""] * 5)[:5]
     code = str(vals[1]).strip().replace(".0", "")
+    if expect and (code != expect[0] or loc_key_of(vals[0]) != expect[1]):
+        invalidate_cache()
+        raise StaleRow()
     expected = cached_code_of_row(row)
     if not code or (expected is not None and expected != code):
         invalidate_cache()
@@ -399,6 +449,11 @@ def apply_qty_batch(user, changes, action="inv", loc=""):
     if not changes:
         return 0
     ws = get_worksheet()
+    col = ws.col_values(2)
+    for row, code, _o, _n in changes:
+        if row - 1 >= len(col) or str(col[row - 1]).strip().replace(".0", "") != str(code):
+            invalidate_cache()
+            raise StaleRow()
     ws.batch_update(
         [{"range": f"E{row}", "values": [[new]]} for row, _code, _old, new in changes],
         value_input_option="USER_ENTERED",
@@ -613,12 +668,14 @@ def code_total(df, code):
 
 
 def build_card(code, df, sk=None, undo_row=None):
-    rows = code_rows(df, code)
-    if rows.empty:
+    rows_all = code_rows(df, code)
+    if rows_all.empty:
         return f"❓ Артикул {code} не знайдено в таблиці.", None
-    first = rows.iloc[0]
-    names = {norm(short_name(n)) for n in rows["name"]}
-    sizes = {norm(s) for s in rows["size"] if s}
+    rows = rows_all[rows_all["q"] > 0]            # рядки з 0 шт. на екрані не показуємо
+    base = rows if not rows.empty else rows_all
+    first = base.iloc[0]
+    names = {norm(short_name(n)) for n in base["name"]}
+    sizes = {norm(s) for s in base["size"] if s}
     total = int(rows["q"].sum())
     labels = [loc_label(p) for p in rows["pallet"]]
     dup = {l for l in labels if labels.count(l) > 1}
@@ -627,14 +684,17 @@ def build_card(code, df, sk=None, undo_row=None):
     lines, kb = [], []
     for (_, r), lab in zip(rows.iterrows(), labels):
         row = int(r["row"])
+        lk = loc_key_of(r["pallet"])
         shown = f"{lab} (р.{row})" if lab in dup else lab
         q = int(r["q"])
         lines.append(f"• {shown} — {q} шт.{load_tag(r['pallet'], ptot)}")
         kb.append([
-            InlineKeyboardButton("➖", callback_data=f"dec_{row}"),
-            InlineKeyboardButton(f"{shown}: {q} шт.", callback_data=f"set_{row}"),
-            InlineKeyboardButton("➕", callback_data=f"inc_{row}"),
+            InlineKeyboardButton("➖", callback_data=f"dec_{row}_{code}_{lk}"),
+            InlineKeyboardButton(f"{shown}: {q} шт.", callback_data=f"set_{row}_{code}_{lk}"),
+            InlineKeyboardButton("➕", callback_data=f"inc_{row}_{code}_{lk}"),
         ])
+    if not lines:
+        lines = ["— зараз ніде не лежить"]
 
     text = (
         f"🛞 {short_name(first['name'])}\n"
@@ -657,6 +717,8 @@ def build_card(code, df, sk=None, undo_row=None):
 
     if total > 0:
         kb.append([InlineKeyboardButton("🔁 Перемістити", callback_data=f"mv_{code}")])
+    else:
+        kb.append([InlineKeyboardButton("➕ Додати на локацію", callback_data=f"addnew_{code}")])
     footer = []
     if undo_row:
         footer.append(InlineKeyboardButton("↩️ Відмінити", callback_data=f"undo_{undo_row}"))
@@ -735,6 +797,7 @@ def palette_keyboard(prefix):
 
 def build_location_view(df, key):
     rows = location_rows(df, key)
+    rows = rows[rows["q"] > 0]
     label = loc_name_of_key(key)
     if rows.empty:
         return f"📦 {label}: тут нічого не записано.", None, rows
@@ -753,6 +816,7 @@ def build_location_view(df, key):
                InlineKeyboardButton("📄 PDF-картка", callback_data=f"pdf_{key}")])
     if key.isdigit() and total > PALLET_MAX:
         kb.append([InlineKeyboardButton("🧭 Куди перенести надлишок", callback_data=f"unl_{key}")])
+    kb.append([InlineKeyboardButton("🔁 Перенести всю локацію", callback_data=f"mps_{key}")])
     kb.append([InlineKeyboardButton("⬅️ Усі палети", callback_data="pals")])
     return "\n".join(lines), InlineKeyboardMarkup(kb), rows
 
@@ -1829,6 +1893,8 @@ HELP_TEXT = (
     "🔁 кнопка «Перемістити» в картці шини — перенос між локаціями\n"
     "🧮 /plan — які палети час перевірити;  🛒 /zakupivlya — що закінчується\n"
     "🧹 /optimize — оптимізація палет 1–44: об'єднати палети, зняти перевантаження, PDF/Excel і запис у таблицю\n"
+    "🔁 /movepallet 28 2 — перенести ВСЕ з однієї локації на іншу одним кліком (є й кнопка у /pallet)\n"
+    "🗑 /cleanup — прибрати рядки з 0 шт. з таблиці (бот робить це й сам щоночі о 03:30); назви шин лишаються в «Історії», артикул можна знову додати\n"
     "🧮 /inventory 27 — інвентаризація палети по позиціях\n"
     "📊 /stats — огляд і розділи: розміри, бренди, локації, рух, якість даних, графіки, Excel-дашборд\n"
     "🪟 /zal — що є на складі, але не виставлено у вітрині зал\n"
@@ -1877,8 +1943,10 @@ async def notify_chats(context, text):
 
 async def after_change(context, user, row, code, old, new):
     last = context.application.bot_data.setdefault("last", {})
-    last[row] = {"code": code, "old": old, "new": new, "ts": _time.time(), "uid": user.id}
     df = await asyncio.to_thread(load_df)
+    prow = df[df["row"] == row]
+    last[row] = {"code": code, "old": old, "new": new, "ts": _time.time(), "uid": user.id,
+                 "lk": loc_key_of(prow.iloc[0]["pallet"]) if len(prow) else None}
     new_total = code_total(df, code)
     old_total = new_total - (new - old)
     if new < old and old_total > LOW_STOCK >= new_total:
@@ -2165,8 +2233,16 @@ async def pallets_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def run_search(update: Update, context: ContextTypes.DEFAULT_TYPE, query: str):
     msg = update.effective_message
     df = await asyncio.to_thread(load_df)
-    codes, note = search_codes(df, query)
+    dfp = df[df["q"] > 0]                                  # у видачі лише шини, які є в наявності
+    codes, note = search_codes(dfp, query)
+    await asyncio.to_thread(load_sklad_safe)               # щоб архів міг брати назви зі складу
+    cat = await asyncio.to_thread(build_catalog, df)
+    arch = archive_matches(df, cat, query)
     if not codes:
+        if arch:
+            await msg.reply_text(f"🔍 У таблиці за запитом «{query}» зараз нічого немає, але в архіві (історія / склад) є. "
+                                 "Обери, щоб додати на локацію:", reply_markup=archive_keyboard(cat, arch))
+            return
         clean = query.strip()
         code = clean if clean.isdigit() and len(clean) >= 4 else "0"
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("➕ Додати як нову шину", callback_data=f"addnew_{code}")]])
@@ -2175,7 +2251,7 @@ async def run_search(update: Update, context: ContextTypes.DEFAULT_TYPE, query: 
     if note:
         await msg.reply_text(note)
     if len(codes) <= MAX_CARDS:
-        first = df[df["code"] == codes[0]]
+        first = dfp[dfp["code"] == codes[0]]
         photo_path = get_tire_photo(first.iloc[0]["name"]) if len(first) else None
         if photo_path and os.path.exists(photo_path):
             try:
@@ -2188,7 +2264,9 @@ async def run_search(update: Update, context: ContextTypes.DEFAULT_TYPE, query: 
     else:
         extra = f" (показано {MAX_LIST})" if len(codes) > MAX_LIST else ""
         await msg.reply_text(f"🔍 Знайшов {len(codes)} артикулів{extra}. Обери потрібний або уточни запит:",
-                             reply_markup=list_keyboard(df, codes))
+                             reply_markup=list_keyboard(dfp, codes))
+    if arch:
+        await msg.reply_text("📚 Є в архіві (зараз немає в таблиці), можна додати на локацію:", reply_markup=archive_keyboard(cat, arch))
 
 
 @guarded
@@ -2211,14 +2289,18 @@ async def refresh_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @guarded
 async def row_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-    action, row_s = q.data.split("_", 1)
-    row = int(row_s)
+    parts = q.data.split("_")
+    action, row = parts[0], int(parts[1])
+    expect = (parts[2], parts[3]) if len(parts) >= 4 else None
+    if expect is None and _state["cleaned"]:
+        await q.answer("Ця картка застаріла (таблицю очищено). Знайди шину ще раз.", show_alert=True)
+        return
     if action == "set":
         await q.answer()
-        context.user_data["waiting_for_row"] = {"row": row, "chat": q.message.chat_id, "msg": q.message.message_id}
+        context.user_data["waiting_for_row"] = {"row": row, "chat": q.message.chat_id, "msg": q.message.message_id, "expect": expect}
         await q.message.reply_text("⌨️ Надішли нову точну кількість для цієї локації (тільки число):")
         return
-    code, old, new = await asyncio.to_thread(change_qty, q.from_user, row, action)
+    code, old, new = await asyncio.to_thread(change_qty, q.from_user, row, action, None, True, expect)
     df_now = await asyncio.to_thread(load_df)
     prow = df_now[df_now["row"] == row]
     warn = pallet_warning(df_now, prow.iloc[0]["pallet"]) if len(prow) else ""
@@ -2241,7 +2323,7 @@ async def undo_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     def _undo():
         ws = get_worksheet()
         vals = (ws.row_values(row) + [""] * 5)[:5]
-        if str(vals[1]).strip().replace(".0", "") != entry["code"]:
+        if str(vals[1]).strip().replace(".0", "") != entry["code"] or (entry.get("lk") and loc_key_of(vals[0]) != entry["lk"]):
             invalidate_cache()
             raise StaleRow()
         cur = to_int(vals[4])
@@ -2304,7 +2386,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(f"⚠️ {text} шт. — забагато, схоже на артикул. Введи кількість (до {MAX_QTY}) ще раз:")
                 return
             context.user_data.pop("waiting_for_row", None)
-            code, old, new = await asyncio.to_thread(change_qty, update.effective_user, w["row"], "set", int(text))
+            code, old, new = await asyncio.to_thread(change_qty, update.effective_user, w["row"], "set", int(text), True, w.get("expect"))
             await after_change(context, update.effective_user, w["row"], code, old, new)
             df_now = await asyncio.to_thread(load_df)
             prow = df_now[df_now["row"] == w["row"]]
@@ -2405,7 +2487,18 @@ async def add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.answer()
         code = q.data.split("_", 1)[1]
         if code.isdigit() and code != "0":
-            context.user_data["new"]["code"] = code
+            new = context.user_data["new"]
+            new["code"] = code
+            df = await asyncio.to_thread(load_df)
+            await asyncio.to_thread(load_sklad_safe)
+            cat = await asyncio.to_thread(build_catalog, df)
+            if code in cat and cat[code]["name"]:
+                new["size"], new["name"] = cat[code]["size"], cat[code]["name"]
+                await q.message.reply_text(
+                    f"➕ {code}: беру назву з {cat[code]['src']}\n• Розмір: {new['size'] or '—'}\n• Назва: {short_name(new['name'])}\n\n"
+                    f"{suggest_text(suggest_pallets(df, code, 1, size=size_of(new['size'])), 1).replace('Куди покласти 1 шт.', 'Де є місце')}\n\n"
+                    "📍 На яку палету додаємо? (/cancel — скасувати)")
+                return PALLET
             await q.message.reply_text(f"➕ Нова шина, артикул {code} (/cancel — скасувати).\n📏 Розмір? (наприклад 205/55 R16)")
             return SIZE
         await q.message.reply_text("➕ Додаємо шину (/cancel — скасувати).\n🔢 Артикул?")
@@ -2424,21 +2517,30 @@ async def add_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     new["code"] = code
     df = await asyncio.to_thread(load_df)
     rows = code_rows(df, code)
-    if not rows.empty:
-        first = rows.iloc[0]
+    rows_pos = rows[rows["q"] > 0]
+    if not rows_pos.empty:
+        first = rows_pos.iloc[0]
         new["size"], new["name"] = first["size"], first["name"]
         await update.message.reply_text(
             "✅ Знайдено в таблиці:\n"
             f"• Артикул: {code}\n• Розмір: {first['size']}\n• Назва: {short_name(first['name'])}\n\n"
-            f"Вже є:\n{locations_text(rows)}\n\n"
+            f"Вже є:\n{locations_text(rows_pos)}\n\n"
             f"{suggest_text(suggest_pallets(df, code, 1), 1).replace('Куди покласти 1 шт.', 'Де є місце')}\n\n📍 На яку палету додаємо?"
         )
+        return PALLET
+    await asyncio.to_thread(load_sklad_safe)
+    cat = await asyncio.to_thread(build_catalog, df)
+    if code in cat and cat[code]["name"]:
+        new["size"], new["name"] = cat[code]["size"], cat[code]["name"]
+        await update.message.reply_text(
+            f"📚 Зараз у таблиці немає, але знайшов в {cat[code]['src']}:\n• Розмір: {new['size'] or '—'}\n• Назва: {short_name(new['name'])}\n\n"
+            f"{suggest_text(suggest_pallets(df, code, 1, size=size_of(new['size'])), 1).replace('Куди покласти 1 шт.', 'Де є місце')}\n\n📍 На яку палету додаємо?")
         return PALLET
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("➕ Додати як нову", callback_data="nt_yes"),
         InlineKeyboardButton("❌ Скасувати", callback_data="nt_no"),
     ]])
-    await update.message.reply_text(f"❌ Артикула {code} в таблиці немає. Додати як нову шину?", reply_markup=kb)
+    await update.message.reply_text(f"❌ Артикула {code} немає ні в таблиці, ні в архіві (історія / склад). Додати як нову шину?", reply_markup=kb)
     return NEWCONFIRM
 
 
@@ -2752,6 +2854,8 @@ async def post_init(app):
             ("add", "Додати шину"),
             ("pallet", "Що лежить на палеті"),
             ("optimize", "Оптимізація палет 1–44"),
+            ("movepallet", "Перенести всю локацію на іншу"),
+            ("cleanup", "Прибрати рядки з 0 шт."),
             ("where", "Куди покласти шини"),
             ("unload", "Перевантажені палети"),
             ("plan", "Які палети перевірити"),
@@ -3054,6 +3158,9 @@ def do_move(user, mv):
     ws = get_worksheet()
     vals = (ws.row_values(mv["src_row"]) + [""] * 5)[:5]
     if str(vals[1]).strip().replace(".0", "") != mv["code"]:
+        invalidate_cache()
+        raise StaleRow()
+    if mv.get("src_pallet") and str(vals[0]).strip().lower() != mv["src_pallet"].strip().lower():
         invalidate_cache()
         raise StaleRow()
     cur = to_int(vals[4])
@@ -3710,6 +3817,378 @@ async def optimize_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
+# ================= ПЕРЕНЕСЕННЯ ВСІЄЇ ЛОКАЦІЇ (напр. палета 28 → палета 2) =================
+MP_TTL = 15 * 60
+
+
+def mp_dest_value(key):
+    return key if key.isdigit() else SPECIAL_LOCS[key]
+
+
+def mp_fingerprint(*frames):
+    rows = sorted((int(r["row"]), r["pallet"].strip(), r["code"], int(r["q"])) for f in frames for _, r in f.iterrows())
+    return hashlib.md5(str(rows).encode()).hexdigest()
+
+
+def mp_plan(df, src_key, dst_key):
+    """План: рядки з джерела, де артикула на призначенні ще немає, просто міняють номер локації; решта додається до наявних."""
+    src, dst = location_rows(df, src_key), location_rows(df, dst_key)
+    dst_by_code = {}
+    for _, r in dst.iterrows():
+        dst_by_code.setdefault(r["code"], r)
+    items, renamed = [], {}
+    for _, r in src[src["q"] > 0].iterrows():
+        row, code, q = int(r["row"]), r["code"], int(r["q"])
+        if code in dst_by_code:
+            t = dst_by_code[code]
+            items.append({"row": row, "code": code, "size": r["size"], "name": r["name"], "q": q, "kind": "merge",
+                          "target": int(t["row"]), "target_q": int(t["q"])})
+        elif code in renamed:   # дубль артикула на самій локації-джерелі
+            items.append({"row": row, "code": code, "size": r["size"], "name": r["name"], "q": q, "kind": "merge",
+                          "target": renamed[code][0], "target_q": renamed[code][1]})
+        else:
+            renamed[code] = (row, q)
+            items.append({"row": row, "code": code, "size": r["size"], "name": r["name"], "q": q, "kind": "rename", "pallet": r["pallet"]})
+    return {"src": src_key, "dst": dst_key, "items": items, "src_total": sum(i["q"] for i in items),
+            "dst_total": int(dst["q"].sum()), "dst_rows": len(dst[dst["q"] > 0]), "fp": mp_fingerprint(src, dst), "ts": _time.time()}
+
+
+def mp_text(plan):
+    s, d = loc_name_of_key(plan["src"]), loc_name_of_key(plan["dst"])
+    n = len(plan["items"])
+    lines = [f"🔁 Перенести ВСЮ локацію\n",
+             f"З: {s} — {n} позицій, {plan['src_total']} шт.",
+             f"На: {d} — зараз {plan['dst_total']} шт. у {plan['dst_rows']} позиціях"]
+    if plan["dst"].isdigit():
+        after = plan["dst_total"] + plan["src_total"]
+        lines.append(f"Після: {load_icon(after)} {after}/{PALLET_MAX}" + (f" ⚠️ понад ліміт на {after - PALLET_MAX}" if after > PALLET_MAX else f" (вільно {PALLET_MAX - after})"))
+    lines.append("\nЩо переноситься:")
+    for it in plan["items"][:14]:
+        note = f"додасться до наявних {it['target_q']} шт." if it["kind"] == "merge" else "окремим рядком"
+        lines.append(f"• {it['code']} · {size_of(it['size'])} · {short_name(it['name'])[:22]} — {it['q']} шт. ({note})")
+    if n > 14:
+        lines.append(f"… і ще {n - 14} позицій")
+    lines.append(f"\nПісля переносу {s} стане порожньою.")
+    return "\n".join(lines)
+
+
+def mp_apply(user, plan, df_now):
+    ws = get_worksheet()
+    dval = mp_dest_value(plan["dst"])
+    src_label, dst_label = loc_label(mp_dest_value(plan["src"])), loc_label(dval)
+    batch, undo = [], {"renamed": [], "qty": [], "dval": dval, "ts": _time.time()}
+    base_q, add_q, code_of = {}, {}, {}
+    hist, ts, who = [], now_str(), user_label(user)
+    for it in plan["items"]:
+        if it["kind"] == "rename":
+            batch.append({"range": f"A{it['row']}", "values": [[dval]]})
+            undo["renamed"].append((it["row"], it.get("pallet") or mp_dest_value(plan["src"]), it["code"], it["q"]))
+            hist.append([ts, who, str(it["code"]), ACTION_TEXT["move_out"], it["q"], 0, src_label])
+            hist.append([ts, who, str(it["code"]), ACTION_TEXT["move_in"], 0, it["q"], dst_label])
+        else:
+            t = it["target"]
+            code_of.setdefault(t, it["code"])
+            base_q.setdefault(t, it["target_q"])
+            before = base_q[t] + add_q.get(t, 0)
+            add_q[t] = add_q.get(t, 0) + it["q"]
+            batch.append({"range": f"E{it['row']}", "values": [[0]]})
+            undo["qty"].append((it["row"], it["q"], 0, it["code"]))
+            hist.append([ts, who, str(it["code"]), ACTION_TEXT["move_out"], it["q"], 0, src_label])
+            hist.append([ts, who, str(it["code"]), ACTION_TEXT["move_in"], before, before + it["q"], dst_label])
+    for t, add in add_q.items():
+        batch.append({"range": f"E{t}", "values": [[base_q[t] + add]]})
+        undo["qty"].append((t, base_q[t], base_q[t] + add, code_of[t]))
+    if batch:
+        ws.batch_update(batch, value_input_option="USER_ENTERED")
+    invalidate_cache()
+    if hist:
+        try:
+            _append_history(hist)
+        except Exception as e:
+            print(f"⚠️ Помилка запису в історію: {e}")
+    return undo
+
+
+def mp_undo(user, undo):
+    ws = get_worksheet()
+    vals = ws.get_all_values()
+    cell = lambda r, c: (vals[r - 1][c - 1] if r - 1 < len(vals) and c - 1 < len(vals[r - 1]) else "")
+    for row, _old, _code, _q in undo["renamed"]:
+        if str(cell(row, 1)).strip() != undo["dval"]:
+            raise ValueError("локацію вже змінювали після перенесення")
+    for row, _old, new, _code in undo["qty"]:
+        if to_int(cell(row, 5)) != new:
+            raise ValueError("кількості вже змінювали після перенесення")
+    data = [{"range": f"A{row}", "values": [[old]]} for row, old, _c, _q in undo["renamed"]]
+    data += [{"range": f"E{row}", "values": [[old]]} for row, old, _new, _c in undo["qty"]]
+    ws.batch_update(data, value_input_option="USER_ENTERED")
+    invalidate_cache()
+    try:
+        ts, who = now_str(), user_label(user)
+        dst_label = loc_label(undo["dval"])
+        hist = []
+        for _row, old, code, q in undo["renamed"]:
+            hist.append([ts, who, str(code), ACTION_TEXT["undo"], q, 0, dst_label])
+            hist.append([ts, who, str(code), ACTION_TEXT["undo"], 0, q, loc_label(old)])
+        for _row, old, new, code in undo["qty"]:
+            if code:
+                hist.append([ts, who, str(code), ACTION_TEXT["undo"], new, old, "" if new == 0 else dst_label])
+        if hist:
+            _append_history(hist)
+    except Exception as e:
+        print(f"⚠️ Помилка запису в історію: {e}")
+
+
+def mp_dest_keyboard(df, src_key):
+    totals = pallet_totals(df)
+    free = sorted([(t, n) for n, t in totals.items() if n != src_key], key=lambda x: (x[0], int(x[1])))[:8]
+    rows, row = [], []
+    for t, n in free:
+        row.append(InlineKeyboardButton(f"{n} · вільно {PALLET_MAX - t}", callback_data=f"mpd_{n}"))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    pk = palette_keyboard("mpd")
+    return InlineKeyboardMarkup(rows + [list(r) for r in pk.inline_keyboard])
+
+
+async def mp_show_preview(msg, context, src_key, dst_key):
+    if src_key == dst_key:
+        await msg.reply_text("⚠️ Джерело й призначення збігаються. Обери іншу локацію.")
+        return
+    df = await asyncio.to_thread(load_df, True)
+    plan = await asyncio.to_thread(mp_plan, df, src_key, dst_key)
+    if not plan["items"]:
+        await msg.reply_text(f"📦 На локації «{loc_name_of_key(src_key)}» немає шин для перенесення.")
+        return
+    context.user_data["mp_plan"] = plan
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Перенести все", callback_data="mpok"), InlineKeyboardButton("❌ Скасувати", callback_data="mpno")]])
+    await msg.reply_text(mp_text(plan), reply_markup=kb)
+
+
+@guarded
+async def movepallet_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    args = context.args or []
+    if len(args) >= 2:
+        a, b = resolve_loc_key(args[0]), resolve_loc_key(args[1])
+        if not a or not b:
+            await msg.reply_text("Напиши так: /movepallet 28 2 (з якої локації на яку; можна «зал», «вулиця», «фасад»).")
+            return
+        await mp_show_preview(msg, context, a, b)
+        return
+    await msg.reply_text("🔁 Перенести ВСЮ локацію. З якої?", reply_markup=palette_keyboard("mps"))
+
+
+@guarded
+async def mp_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    data = q.data
+    msg = q.message
+    if data.startswith("mps_"):
+        await q.answer()
+        src = data.split("_", 1)[1]
+        context.user_data["mp_src"] = src
+        df = await asyncio.to_thread(load_df)
+        await msg.reply_text(f"🔁 Перенести все з «{loc_name_of_key(src)}». Куди? (угорі найвільніші палети)", reply_markup=mp_dest_keyboard(df, src))
+        return
+    if data.startswith("mpd_"):
+        await q.answer()
+        src = context.user_data.get("mp_src")
+        if not src:
+            await msg.reply_text("Спершу обери, з якої локації переносити: /movepallet")
+            return
+        await mp_show_preview(msg, context, src, data.split("_", 1)[1])
+        return
+    plan = context.user_data.get("mp_plan")
+    if data == "mpno":
+        await q.answer()
+        context.user_data.pop("mp_plan", None)
+        await q.edit_message_text("❌ Скасовано, таблицю не змінено.")
+        return
+    if data == "mpok":
+        if not plan or _time.time() - plan["ts"] > MP_TTL:
+            await q.answer("План застарів, запусти /movepallet ще раз.", show_alert=True)
+            return
+        await q.answer("Переношу…")
+        df_now = await asyncio.to_thread(load_df, True)
+        fp = mp_fingerprint(location_rows(df_now, plan["src"]), location_rows(df_now, plan["dst"]))
+        if fp != plan["fp"]:
+            context.user_data.pop("mp_plan", None)
+            await q.edit_message_text("🔄 Ці локації змінили, поки ти підтверджував. Запусти /movepallet ще раз.")
+            return
+        undo = await asyncio.to_thread(mp_apply, q.from_user, plan, df_now)
+        context.application.bot_data["mp_undo"] = undo
+        context.user_data.pop("mp_plan", None)
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Відмінити перенесення", callback_data="mpundo")]])
+        await q.edit_message_text(
+            f"✅ Перенесено все з «{loc_name_of_key(plan['src'])}» на «{loc_name_of_key(plan['dst'])}»: {len(plan['items'])} позицій, {plan['src_total']} шт.\n"
+            f"Локація «{loc_name_of_key(plan['src'])}» тепер вільна. Відмінити можна протягом години, якщо ці рядки ніхто не змінить.", reply_markup=kb)
+        return
+    if data == "mpundo":
+        undo = context.application.bot_data.get("mp_undo")
+        if not undo or _time.time() - undo["ts"] > OPT_UNDO_WINDOW:
+            await q.answer("Відмінити вже не можна (минула година або перезапуск бота).", show_alert=True)
+            return
+        await q.answer("Відміняю…")
+        try:
+            await asyncio.to_thread(mp_undo, q.from_user, undo)
+        except ValueError as e:
+            await msg.reply_text(f"⚠️ Автоматично відмінити не вдалося: {e}.")
+            return
+        context.application.bot_data.pop("mp_undo", None)
+        await q.edit_message_text("↩️ Перенесення відмінено: шини повернуто на попередню локацію.")
+        return
+
+
+
+# ================= ОЧИЩЕННЯ НУЛЬОВИХ РЯДКІВ ТА АРХІВ НАЗВ =================
+CLEANUP_TIME = os.environ.get("CLEANUP_TIME", "03:30")
+AUTO_CLEANUP = os.environ.get("AUTO_CLEANUP", "on").strip().lower() not in ("off", "0", "no", "ні")
+
+
+class _AutoUser:
+    username = "авто-очищення"
+    first_name = "Бот"
+    id = 0
+
+
+def _size_from_name(name):
+    sz = size_of(name)
+    return sz if re.match(r"\d{3}/\d{2}R\d{2}", str(sz)) else ""
+
+
+def find_zero_rows():
+    """Рядки таблиці з 0 шт. і порожні рядки між даними."""
+    data = get_worksheet().get_all_values()
+    last_filled = 0
+    for i, r in enumerate(data[FIRST_DATA_ROW - 1:], start=FIRST_DATA_ROW):
+        if len(r) > 1 and str(r[1]).strip():
+            last_filled = i
+    zero, blank = [], []
+    for i, r in enumerate(data[FIRST_DATA_ROW - 1:], start=FIRST_DATA_ROW):
+        r = (list(r) + [""] * 5)[:5]
+        code = str(r[1]).strip().replace(".0", "")
+        if code:
+            if to_int(r[4]) == 0:
+                zero.append({"row": i, "pallet": str(r[0]).strip(), "code": code, "size": str(r[2]).strip(), "name": str(r[3]).strip()})
+        elif not any(str(x).strip() for x in r) and i < last_filled:
+            blank.append(i)
+    return zero, blank
+
+
+def cleanup_rows(user):
+    """Видаляє рядки з 0 шт. і порожні рядки. Назви й розміри спершу записує в «Історію», щоб артикул можна було додати знову."""
+    zero, blank = find_zero_rows()
+    if not zero and not blank:
+        return {"zero": 0, "blank": 0}
+    ws = get_worksheet()
+    ts, who = now_str(), user_label(user)
+    hist = []
+    for z in zero:
+        sz = z["size"] or _size_from_name(z["name"])
+        hist.append([ts, who, z["code"], ACTION_TEXT["cleanup"], 0, 0, loc_label(z["pallet"]) if z["pallet"] else "", z["name"], sz])
+    if hist:
+        _append_history(hist)   # якщо запис не вдався, нічого не видаляємо
+    rows_del = sorted([z["row"] for z in zero] + blank)
+    ranges = []
+    for r in rows_del:
+        if ranges and r == ranges[-1][1] + 1:
+            ranges[-1][1] = r
+        else:
+            ranges.append([r, r])
+    reqs = [{"deleteDimension": {"range": {"sheetId": ws.id, "dimension": "ROWS", "startIndex": a - 1, "endIndex": b}}}
+            for a, b in reversed(ranges)]
+    ws.spreadsheet.batch_update({"requests": reqs})
+    _state["cleaned"] = True
+    invalidate_cache()
+    return {"zero": len(zero), "blank": len(blank)}
+
+
+def reset_row_states(bot_data):
+    for k in list(bot_data):
+        if k in ("last", "mp_undo") or str(k).startswith("opt"):
+            bot_data.pop(k, None)
+
+
+@guarded
+async def cleanup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    zero, blank = await asyncio.to_thread(find_zero_rows)
+    if not zero and not blank:
+        await msg.reply_text("✅ Рядків з 0 шт. і порожніх рядків немає: таблиця чиста.")
+        return
+    lines = ["🧹 Очищення таблиці\n", f"Рядків з 0 шт.: {len(zero)}", f"Порожніх рядків між даними: {len(blank)}"]
+    for z in zero[:12]:
+        lines.append(f"• {z['code']} · {z['size'] or _size_from_name(z['name'])} · {short_name(z['name'])[:26]} · {loc_label(z['pallet']) if z['pallet'] else ''}")
+    if len(zero) > 12:
+        lines.append(f"… і ще {len(zero) - 12}")
+    lines.append("\nПеред видаленням бот запише назви й розміри цих шин в «Історію» (колонки «Назва» і «Розмір»), тому артикул можна буде знову додати на будь-яку локацію (/add або пошук в архіві).")
+    lines.append("Рядки нижче видалених зсунуться вгору, тож старі картки в чаті краще оновити пошуком.")
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"🗑 Видалити {len(zero) + len(blank)} рядків", callback_data="cl_ok"),
+                                InlineKeyboardButton("❌ Скасувати", callback_data="cl_no")]])
+    await msg.reply_text("\n".join(lines), reply_markup=kb)
+
+
+@guarded
+async def cleanup_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if q.data == "cl_no":
+        await q.answer()
+        await q.edit_message_text("❌ Скасовано, таблицю не змінено.")
+        return
+    await q.answer("Видаляю…")
+    res = await asyncio.to_thread(cleanup_rows, q.from_user)
+    reset_row_states(context.application.bot_data)
+    await q.edit_message_text(f"✅ Видалено рядків з 0 шт.: {res['zero']}, порожніх рядків: {res['blank']}. "
+                              "Назви збережено в «Історії», шини можна знову додати на локацію.")
+
+
+async def cleanup_job(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        res = await asyncio.to_thread(cleanup_rows, _AutoUser())
+        reset_row_states(context.application.bot_data)
+    except Exception as e:
+        print(f"⚠️ Помилка нічного очищення: {e}")
+        return
+    if res["zero"] or res["blank"]:
+        await notify_chats(context, f"🧹 Нічне очищення таблиці: видалено {res['zero']} рядків з 0 шт. і {res['blank']} порожніх. Назви збережено в «Історії».")
+
+
+# ---------- архів назв: таблиця + історія + склад ----------
+def build_catalog(df):
+    cat = {}
+    for c, v in (_sklad_cache.get("data") or {}).items():
+        if v.get("name"):
+            cat[c] = {"size": _size_from_name(v["name"]), "name": v["name"], "src": "складі"}
+    for h in read_history():
+        if h.get("name") and str(h["code"]).isdigit():
+            cat[h["code"]] = {"size": h.get("size") or _size_from_name(h["name"]), "name": h["name"], "src": "історії"}
+    seen = set()
+    for _, r in df.sort_values("q", ascending=False).iterrows():
+        if r["code"] not in seen and r["name"]:
+            seen.add(r["code"])
+            cat[r["code"]] = {"size": r["size"] or _size_from_name(r["name"]), "name": r["name"], "src": "таблиці"}
+    return cat
+
+
+def archive_matches(df, cat, query, limit=6):
+    """Артикули, яких зараз немає в таблиці з залишком, але які є в історії чи складі."""
+    pos = set(df[df["q"] > 0]["code"])
+    arch = [{"code": c, "size": v["size"], "name": v["name"]} for c, v in cat.items() if c not in pos]
+    if not arch:
+        return []
+    codes, _note = search_codes(pd.DataFrame(arch), query)
+    return codes[:limit]
+
+
+def archive_keyboard(cat, codes):
+    return InlineKeyboardMarkup([[InlineKeyboardButton(f"➕ {c} · {cat[c]['size'] or '—'} · {short_name(cat[c]['name'])[:26]}", callback_data=f"addnew_{c}")] for c in codes])
+
+
+
 # ----------------- ЗАПУСК -----------------
 def main():
     if TELEGRAM_BOT_TOKEN == "ВСТАВ_СЮДИ_ТОКЕН":
@@ -3785,6 +4264,8 @@ def main():
     app.add_handler(CommandHandler("zal", zal_command))
     app.add_handler(CommandHandler("where", where_command))
     app.add_handler(CommandHandler(["optimize", "optymizatsiya"], optimize_command))
+    app.add_handler(CommandHandler(["movepallet", "perenesty"], movepallet_command))
+    app.add_handler(CommandHandler("cleanup", cleanup_command))
     app.add_handler(CommandHandler("unload", unload_command))
     app.add_handler(CommandHandler("plan", plan_command))
     app.add_handler(CommandHandler("zakupivlya", order_command))
@@ -3796,7 +4277,7 @@ def main():
     app.add_handler(CommandHandler("export", export_command))
     app.add_handler(CommandHandler("myid", myid))
     app.add_handler(CommandHandler("cancel", cancel_plain))
-    app.add_handler(CallbackQueryHandler(row_action, pattern=r"^(inc|dec|set)_\d+$"))
+    app.add_handler(CallbackQueryHandler(row_action, pattern=r"^(inc|dec|set)_\d+(_\d+_[0-9a-z]+)?$"))
     app.add_handler(CallbackQueryHandler(undo_action, pattern=r"^undo_\d+$"))
     app.add_handler(CallbackQueryHandler(refresh_card, pattern=r"^rf_\d+$"))
     app.add_handler(CallbackQueryHandler(open_card, pattern=r"^card_\d+$"))
@@ -3808,6 +4289,8 @@ def main():
     app.add_handler(CallbackQueryHandler(zal_excel, pattern=r"^zalx$"))
     app.add_handler(CallbackQueryHandler(pallet_pdf_cb, pattern=r"^pdf_(\d+|zal|vul|fas)$"))
     app.add_handler(CallbackQueryHandler(unload_pick, pattern=r"^unl_\d+$"))
+    app.add_handler(CallbackQueryHandler(cleanup_cb, pattern=r"^cl_(ok|no)$"))
+    app.add_handler(CallbackQueryHandler(mp_router, pattern=r"^(mps_(\d+|zal|vul|fas)|mpd_(\d+|zal|vul|fas)|mpok|mpno|mpundo)$"))
     app.add_handler(CallbackQueryHandler(optimize_cb, pattern=r"^opt_[a-z]+$"))
     app.add_handler(MessageHandler(plain_text, handle_message))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
@@ -3824,6 +4307,14 @@ def main():
                 hh, mm = 8, 30
             app.job_queue.run_daily(daily_job, time=dtime(hour=hh, minute=mm, tzinfo=KYIV), name="daily_report")
             print(f"🕗 Ранковий звіт щодня о {hh:02d}:{mm:02d} (Київ) → {REPORT_CHAT_IDS}")
+
+    if AUTO_CLEANUP and app.job_queue is not None:
+        try:
+            ch, cm = [int(x) for x in CLEANUP_TIME.split(":")]
+        except Exception:
+            ch, cm = 3, 30
+        app.job_queue.run_daily(cleanup_job, time=dtime(hour=ch, minute=cm, tzinfo=KYIV), name="cleanup")
+        print(f"🧹 Нічне очищення нульових рядків о {ch:02d}:{cm:02d} (Київ)")
 
     print("🤖 Бот успішно запущений!")
     app.run_polling()
