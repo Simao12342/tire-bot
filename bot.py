@@ -784,15 +784,36 @@ def location_rows(df, key):
     return df[df["pallet"].str.strip().str.lower() == name].sort_values("row")
 
 
-def palette_keyboard(prefix):
-    nums = [InlineKeyboardButton(str(n), callback_data=f"{prefix}_{n}") for n in range(1, 45)]
-    kb = [nums[i:i + 6] for i in range(0, len(nums), 6)]
-    kb.append([
-        InlineKeyboardButton("🪟 Вітрина зал", callback_data=f"{prefix}_zal"),
-        InlineKeyboardButton("🏬 Вулиця", callback_data=f"{prefix}_vul"),
-        InlineKeyboardButton("🏗 Фасад", callback_data=f"{prefix}_fas"),
-    ])
-    return InlineKeyboardMarkup(kb)
+def palette_keyboard(prefix, df=None, only_active=False):
+    """Кнопки вибору локації. З only_active показує лише локації із залишком (і кількість шт.), без порожніх."""
+    B = InlineKeyboardButton
+    if df is None or not only_active:
+        nums = [B(str(n), callback_data=f"{prefix}_{n}") for n in range(1, 45)]
+        kb = [nums[i:i + 6] for i in range(0, len(nums), 6)]
+        kb.append([B("🪟 Вітрина зал", callback_data=f"{prefix}_zal"), B("🏬 Вулиця", callback_data=f"{prefix}_vul"),
+                   B("🏗 Фасад", callback_data=f"{prefix}_fas")])
+        return InlineKeyboardMarkup(kb)
+    totals = pallet_totals(df)
+    nums = [B(f"{n} · {totals[str(n)]}", callback_data=f"{prefix}_{n}") for n in range(1, 45) if totals[str(n)] > 0]
+    kb = [nums[i:i + 4] for i in range(0, len(nums), 4)]
+    special = []
+    for key, label in (("zal", "🪟 Зал"), ("vul", "🏬 Вулиця"), ("fas", "🏗 Фасад")):
+        t = int(location_rows(df, key)["q"].sum())
+        if t > 0:
+            special.append(B(f"{label} · {t}", callback_data=f"{prefix}_{key}"))
+    if special:
+        kb.append(special)
+    return InlineKeyboardMarkup(kb) if kb else None
+
+
+async def send_picker(msg, prefix, text):
+    """Надсилає вибір локації: щоразу будується заново з поточної таблиці, тому порожніх локацій у ньому немає."""
+    df = await asyncio.to_thread(load_df)
+    kb = palette_keyboard(prefix, df, only_active=True)
+    if kb is None:
+        await msg.reply_text("📦 Зараз немає жодної локації із залишком.")
+        return
+    await msg.reply_text(text + "\n(показано лише локації із залишком, число поруч: шт.)", reply_markup=kb)
 
 
 def build_location_view(df, key):
@@ -2210,7 +2231,7 @@ async def show_location(msg, context, key):
 async def pallet_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     key = resolve_loc_key(" ".join(context.args)) if context.args else None
     if not key:
-        await update.message.reply_text("📦 Обери палету або локацію:", reply_markup=palette_keyboard("pal"))
+        await send_picker(update.message, "pal", "📦 Обери палету або локацію:")
         return
     await show_location(update.message, context, key)
 
@@ -2226,7 +2247,7 @@ async def pallet_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def pallets_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    await q.message.reply_text("📦 Обери палету або локацію:", reply_markup=palette_keyboard("pal"))
+    await send_picker(q.message, "pal", "📦 Обери палету або локацію:")
 
 
 # ----------------- ПОШУК І КАРТКИ -----------------
@@ -2358,7 +2379,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(MENU_PROMPT)
         return
     if text == "📦 Палети":
-        await update.message.reply_text("📦 Обери палету або локацію:", reply_markup=palette_keyboard("pal"))
+        await send_picker(update.message, "pal", "📦 Обери палету або локацію:")
         return
     if text == "📊 Статистика":
         return await stats_command(update, context)
@@ -2761,7 +2782,7 @@ async def inv_begin(update: Update, context: ContextTypes.DEFAULT_TYPE, key):
 async def inv_entry_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     key = resolve_loc_key(" ".join(context.args)) if context.args else None
     if not key:
-        await update.message.reply_text("🧮 Інвентаризація: обери палету або локацію:", reply_markup=palette_keyboard("invs"))
+        await send_picker(update.message, "invs", "🧮 Інвентаризація: обери палету або локацію:")
         return ConversationHandler.END
     return await inv_begin(update, context, key)
 
@@ -3979,7 +4000,7 @@ async def movepallet_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             return
         await mp_show_preview(msg, context, a, b)
         return
-    await msg.reply_text("🔁 Перенести ВСЮ локацію. З якої?", reply_markup=palette_keyboard("mps"))
+    await send_picker(msg, "mps", "🔁 Перенести ВСЮ локацію. З якої?")
 
 
 @guarded
