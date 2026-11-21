@@ -98,42 +98,57 @@ def start_miniapp_server(bot_module, port: int):
             if not self._authorized():
                 return self._send_json(403, {"error": "invalid_init_data"})
             path = urllib.parse.urlparse(self.path).path
-            body = self._read_json()
+            try:
+                body = self._read_json()
 
-            class _WebUser:
-                id = 0
-                first_name = "MiniApp"
-                username = "miniapp"
+                class _WebUser:
+                    id = 0
+                    first_name = "MiniApp"
+                    username = "miniapp"
 
-            user = _WebUser()
-            if path == "/api/qty":
-                bot_module.change_qty(int(body["row"]), str(body["code"]), int(body["delta"]), user, action=body.get("reason", "MiniApp"))
-                return self._send_json(200, {"ok": True})
-            if path == "/api/add":
-                bot_module.add_tire(str(body["pallet"]), str(body["code"]), str(body.get("size", "")), str(body["name"]), int(body["qty"]), user)
-                return self._send_json(200, {"ok": True})
-            if path == "/api/move":
-                bot_module.do_move(int(body["from_row"]), str(body["code"]), str(body["to_pallet"]), int(body["qty"]), user)
-                return self._send_json(200, {"ok": True})
-            if path == "/api/movepallet":
-                df = bot_module.load_df(force=True)
-                plan = bot_module.mp_plan(df, str(body["from_loc"]), str(body["to_loc"]))
-                bot_module.mp_apply(user, df, plan)
-                return self._send_json(200, {"ok": True})
-            if path == "/api/optimize/apply":
-                df = bot_module.load_df(force=True)
-                plan = bot_module.optimize_plan(df, mode=body.get("mode", "min"))
-                _LAST_OPT_UNDO = bot_module.apply_plan(user, df, plan)
-                return self._send_json(200, {"ok": True})
-            if path == "/api/optimize/undo":
-                if _LAST_OPT_UNDO:
-                    bot_module.undo_plan(user, _LAST_OPT_UNDO)
-                    _LAST_OPT_UNDO = None
-                return self._send_json(200, {"ok": True})
-            if path == "/api/cleanup":
-                res = bot_module.cleanup_rows(user)
-                return self._send_json(200, {"ok": True, "result": res})
-            return self._send_json(404, {"error": "not_found"})
+                user = _WebUser()
+                if path == "/api/qty":
+                    row = int(body["row"])
+                    new_qty = int(body["new_qty"])
+                    bot_module.change_qty(user, row, "set", value=new_qty)
+                    return self._send_json(200, {"ok": True})
+                if path == "/api/add":
+                    bot_module.add_tire(user, str(body["pallet"]), str(body["code"]), str(body.get("size", "")), str(body["name"]), int(body["qty"]), action="add")
+                    return self._send_json(200, {"ok": True})
+                if path == "/api/move":
+                    mv = {
+                        "src_row": int(body["from_row"]),
+                        "src_pallet": str(body.get("from_pallet", "")),
+                        "code": str(body["code"]),
+                        "size": str(body.get("size", "")),
+                        "name": str(body.get("name", "")),
+                        "dest": str(body["to_pallet"]),
+                        "qty": int(body["qty"]),
+                    }
+                    bot_module.do_move(user, mv)
+                    return self._send_json(200, {"ok": True})
+                if path == "/api/movepallet":
+                    df = bot_module.load_df(force=True)
+                    plan = bot_module.mp_plan(df, str(body["from_loc"]), str(body["to_loc"]))
+                    bot_module.mp_apply(user, plan, df)
+                    return self._send_json(200, {"ok": True})
+                if path == "/api/optimize/apply":
+                    df = bot_module.load_df(force=True)
+                    plan = bot_module.optimize_plan(df, mode=body.get("mode", "min"))
+                    _LAST_OPT_UNDO = bot_module.apply_plan(user, df, plan)
+                    return self._send_json(200, {"ok": True})
+                if path == "/api/optimize/undo":
+                    if _LAST_OPT_UNDO:
+                        bot_module.undo_plan(user, _LAST_OPT_UNDO)
+                        _LAST_OPT_UNDO = None
+                    return self._send_json(200, {"ok": True})
+                if path == "/api/cleanup":
+                    res = bot_module.cleanup_rows(user)
+                    return self._send_json(200, {"ok": True, "result": res})
+                return self._send_json(404, {"error": "not_found"})
+            except Exception as e:
+                print(f"[MiniApp API Error] {path}: {e}", flush=True)
+                return self._send_json(500, {"error": str(e)})
 
         def log_message(self, *args):
             pass

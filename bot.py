@@ -24,6 +24,7 @@ from telegram import (
     ReplyKeyboardMarkup,
     KeyboardButton,
     WebAppInfo,
+    MenuButtonWebApp,
 )
 from telegram.ext import (
     ApplicationBuilder,
@@ -70,7 +71,7 @@ threading.Thread(target=_start_web, daemon=True).start()
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN") or "ВСТАВ_СЮДИ_ТОКЕН"
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")      # потрібен ТІЛЬКИ для пошуку по фото цінника
 SPREADSHEET_NAME = os.environ.get("SPREADSHEET_NAME", "шини 2026")
-WEBAPP_URL = os.environ.get("WEBAPP_URL", "").strip()
+WEBAPP_URL = (os.environ.get("WEBAPP_URL", "") or os.environ.get("RENDER_EXTERNAL_URL", "")).strip()
 
 # Склад для звірки: за замовчуванням аркуш «Склад» у цій самій Google Таблиці
 # (колонки: Артикул | Назва | Кількість). Можна змінити назву аркуша змінною SKLAD_SHEET
@@ -2904,6 +2905,11 @@ async def post_init(app):
         ])
     except Exception as e:
         print(f"⚠️ Не вдалося встановити команди: {e}")
+    if WEBAPP_URL:
+        try:
+            await app.bot.set_chat_menu_button(menu_button=MenuButtonWebApp(text="🛞", web_app=WebAppInfo(url=WEBAPP_URL)))
+        except Exception as e:
+            print(f"⚠️ Не вдалося встановити кнопку Mini App: {e}")
 
 
 # ================= ПАЛЕТИ: ЛІМІТ, ПІДКАЗКИ, ПЕРЕМІЩЕННЯ, ЗАКУПІВЛЯ, ПЛАН ПЕРЕВІРОК =================

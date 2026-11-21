@@ -968,7 +968,7 @@
       tire.qty = newQty;
       pushHistory(reason, tire.code, oldQty, newQty, locLabel(tire.pallet), tire.name);
       saveLocal(); renderAll();
-      if (hasBackendApi) try { await apiCall("/api/qty", "POST", { row: tire.row, code: tire.code, delta: newQty - oldQty, reason }); } catch (e) { showToast("Помилка синхронізації з Google Sheets"); }
+      if (hasBackendApi) try { await apiCall("/api/qty", "POST", { row: tire.row, code: tire.code, new_qty: newQty, delta: newQty - oldQty, reason }); } catch (e) { showToast("Помилка синхронізації з Google Sheets"); }
     }
 
     // Listeners
@@ -995,7 +995,7 @@
           t.qty = last.oldQty;
           pushHistory("Undo", t.code, last.newQty, last.oldQty, locLabel(t.pallet), t.name);
           saveLocal(); renderAll();
-          if (hasBackendApi) try { await apiCall("/api/qty", "POST", { row: t.row, code: t.code, delta: last.oldQty - last.newQty, reason: "Undo" }); } catch (e) {}
+          if (hasBackendApi) try { await apiCall("/api/qty", "POST", { row: t.row, code: t.code, new_qty: last.oldQty, delta: last.oldQty - last.newQty, reason: "Undo" }); } catch (e) {}
         }
       }
     });
@@ -1114,7 +1114,7 @@
       saveLocal();
       document.getElementById("moveItemModal").classList.add("hidden"); document.getElementById("moveItemModal").classList.remove("flex");
       renderAll(); showToast("Переміщено");
-      if (hasBackendApi) try { await apiCall("/api/move", "POST", { from_row: t.row, code: t.code, to_pallet: to, qty }); await syncFromBackend(); } catch (err) {}
+      if (hasBackendApi) try { await apiCall("/api/move", "POST", { from_row: t.row, from_pallet: t.pallet, code: t.code, size: t.size, name: t.name, to_pallet: to, qty }); await syncFromBackend(); } catch (err) {}
     });
 
     document.getElementById("openMovePalletModalBtn").addEventListener("click", () => { document.getElementById("movePalletModal").classList.remove("hidden"); document.getElementById("movePalletModal").classList.add("flex"); });
