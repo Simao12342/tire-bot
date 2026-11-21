@@ -22,6 +22,8 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     ReplyKeyboardMarkup,
+    KeyboardButton,
+    WebAppInfo,
 )
 from telegram.ext import (
     ApplicationBuilder,
@@ -53,7 +55,14 @@ def run_health_check_server():
     HTTPServer(("0.0.0.0", port), HealthCheckHandler).serve_forever()
 
 
-threading.Thread(target=run_health_check_server, daemon=True).start()
+import sys as _sys
+def _start_web():
+    try:
+        import webapp_bridge
+        webapp_bridge.start_miniapp_server(_sys.modules[__name__], int(os.environ.get('PORT', 8080)))
+    except Exception:
+        run_health_check_server()
+threading.Thread(target=_start_web, daemon=True).start()
 
 # ----------------- НАЛАШТУВАННЯ -----------------
 # Токен береться зі змінної середовища TELEGRAM_BOT_TOKEN (Render -> Environment).
@@ -61,6 +70,7 @@ threading.Thread(target=run_health_check_server, daemon=True).start()
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN") or "ВСТАВ_СЮДИ_ТОКЕН"
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")      # потрібен ТІЛЬКИ для пошуку по фото цінника
 SPREADSHEET_NAME = os.environ.get("SPREADSHEET_NAME", "шини 2026")
+WEBAPP_URL = os.environ.get("WEBAPP_URL", "").strip()
 
 # Склад для звірки: за замовчуванням аркуш «Склад» у цій самій Google Таблиці
 # (колонки: Артикул | Назва | Кількість). Можна змінити назву аркуша змінною SKLAD_SHEET

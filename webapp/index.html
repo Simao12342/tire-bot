@@ -1,0 +1,1142 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Tire-bot — Telegram Mini App</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --tg-bg: #f3f5f8;
+      --tg-secondary-bg: #ffffff;
+      --tg-text: #0f172a;
+      --tg-hint: #64748b;
+      --tg-button: #2481cc;
+      --tg-button-text: #ffffff;
+      --tg-border: #e2e8f0;
+    }
+    html.dark {
+      --tg-bg: #17212b;
+      --tg-secondary-bg: #232e3c;
+      --tg-text: #f1f5f9;
+      --tg-hint: #8b9bb4;
+      --tg-button: #2b88d8;
+      --tg-button-text: #ffffff;
+      --tg-border: #2f3d4d;
+    }
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background-color: var(--tg-bg);
+      color: var(--tg-text);
+      -webkit-tap-highlight-color: transparent;
+    }
+    .surface { background-color: var(--tg-secondary-bg); border-color: var(--tg-border); }
+    .text-hint { color: var(--tg-hint); }
+    .tg-btn { background-color: var(--tg-button); color: var(--tg-button-text); }
+    .tg-btn:hover { filter: brightness(1.06); }
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+  </style>
+</head>
+<body class="min-h-screen pb-24 transition-colors duration-150">
+
+  <!-- Header -->
+  <header class="surface sticky top-0 z-30 border-b px-4 py-3 backdrop-blur">
+    <div class="mx-auto flex max-w-4xl items-center justify-between gap-2">
+      <div class="flex items-center gap-2.5 min-w-0">
+        <div class="tg-btn flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-lg font-bold shadow-sm">🛞</div>
+        <div class="min-w-0">
+          <div class="flex items-center gap-2">
+            <h1 class="truncate text-base font-bold tracking-tight">Склад автошини</h1>
+            <span id="modeBadge" class="rounded-full bg-sky-500/15 px-2 py-0.5 text-[11px] font-semibold text-sky-600 dark:text-sky-400">Mini App</span>
+          </div>
+          <p id="userSubtitle" class="text-hint truncate text-xs">Таблиця «шини 2026»</p>
+        </div>
+      </div>
+      <div class="flex items-center gap-1.5 shrink-0">
+        <button id="undoBtn" type="button" title="Скасувати останню дію" class="surface hidden h-9 items-center gap-1 rounded-xl border px-2.5 text-xs font-semibold text-amber-600 dark:text-amber-400">
+          ↩️ Undo
+        </button>
+        <button id="themeToggleBtn" type="button" title="Змінити тему" class="surface flex h-9 w-9 items-center justify-center rounded-xl border text-sm">🌙</button>
+        <button id="openAddModalBtn" type="button" class="tg-btn flex h-9 items-center gap-1 rounded-xl px-3 text-xs font-semibold shadow-sm active:scale-95">
+          <span>+</span><span>Додати</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="mx-auto max-w-4xl px-4 pt-4">
+    <!-- KPI Strip -->
+    <section class="mb-4 grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+      <div class="surface rounded-2xl border p-3 shadow-sm">
+        <p class="text-hint text-[11px] font-medium uppercase tracking-wider">Усього шин</p>
+        <p id="kpiQty" class="mt-0.5 text-xl font-bold tabular-nums">0</p>
+      </div>
+      <div class="surface rounded-2xl border p-3 shadow-sm">
+        <p class="text-hint text-[11px] font-medium uppercase tracking-wider">Позицій (рядків)</p>
+        <p id="kpiRows" class="mt-0.5 text-xl font-bold tabular-nums">0</p>
+      </div>
+      <div class="surface rounded-2xl border p-3 shadow-sm">
+        <p class="text-hint text-[11px] font-medium uppercase tracking-wider">Активних локацій</p>
+        <p id="kpiLocs" class="mt-0.5 text-xl font-bold tabular-nums">0</p>
+      </div>
+      <div class="surface rounded-2xl border p-3 shadow-sm">
+        <p class="text-hint text-[11px] font-medium uppercase tracking-wider">Перевантажено (&gt;16)</p>
+        <p id="kpiOverload" class="mt-0.5 text-xl font-bold tabular-nums text-amber-600 dark:text-amber-400">0</p>
+      </div>
+    </section>
+
+    <!-- VIEW 1: СКЛАД (ПОШУК ТА КАРТКИ) -->
+    <section id="viewCatalog" class="space-y-3">
+      <div class="surface rounded-2xl border p-3 shadow-sm space-y-2.5">
+        <div class="flex flex-col gap-2 sm:flex-row">
+          <div class="relative flex-1">
+            <span class="text-hint pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm">🔍</span>
+            <input id="searchInput" type="text" placeholder="Код, розмір (195/65R15 або 195 65 15), бренд (хенкук, петлас)..."
+              class="surface w-full rounded-xl border py-2 pl-9 pr-8 text-sm outline-none focus:ring-2 focus:ring-sky-500/40" />
+            <button id="clearSearchBtn" type="button" class="text-hint hidden absolute right-2.5 top-1/2 -translate-y-1/2 text-xs font-bold">✕</button>
+          </div>
+          <select id="locFilterSelect" class="surface rounded-xl border px-3 py-2 text-sm outline-none sm:w-48">
+            <option value="all">Усі локації</option>
+          </select>
+        </div>
+
+        <div class="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
+          <button type="button" data-season="all" class="season-pill shrink-0 rounded-full px-3 py-1 text-xs font-semibold transition">Усі</button>
+          <button type="button" data-season="зима" class="season-pill shrink-0 rounded-full px-3 py-1 text-xs font-semibold transition">❄️ Зима</button>
+          <button type="button" data-season="літо" class="season-pill shrink-0 rounded-full px-3 py-1 text-xs font-semibold transition">☀️ Літо</button>
+          <button type="button" data-season="всесезон" class="season-pill shrink-0 rounded-full px-3 py-1 text-xs font-semibold transition">🌦️ Всесезон</button>
+        </div>
+
+        <div class="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+          <span class="text-hint mr-1 text-[11px] font-medium shrink-0">Радіус:</span>
+          <button type="button" data-rim="all" class="rim-pill shrink-0 rounded-lg px-2.5 py-1 text-xs font-medium transition">Всі</button>
+          <button type="button" data-rim="R13" class="rim-pill shrink-0 rounded-lg px-2.5 py-1 text-xs font-medium transition">R13</button>
+          <button type="button" data-rim="R14" class="rim-pill shrink-0 rounded-lg px-2.5 py-1 text-xs font-medium transition">R14</button>
+          <button type="button" data-rim="R15" class="rim-pill shrink-0 rounded-lg px-2.5 py-1 text-xs font-medium transition">R15</button>
+          <button type="button" data-rim="R16" class="rim-pill shrink-0 rounded-lg px-2.5 py-1 text-xs font-medium transition">R16</button>
+          <button type="button" data-rim="R17" class="rim-pill shrink-0 rounded-lg px-2.5 py-1 text-xs font-medium transition">R17</button>
+          <button type="button" data-rim="R18" class="rim-pill shrink-0 rounded-lg px-2.5 py-1 text-xs font-medium transition">R18</button>
+        </div>
+      </div>
+
+      <div class="flex items-center justify-between px-1 text-xs">
+        <span id="catalogCountText" class="text-hint">Показано 0</span>
+        <button id="resetFiltersBtn" type="button" class="hidden font-semibold text-sky-600 dark:text-sky-400 hover:underline">Скинути фільтри</button>
+      </div>
+
+      <div id="catalogList" class="space-y-2.5"></div>
+    </section>
+
+    <!-- VIEW 2: ПАЛЕТИ І ВІТРИНИ -->
+    <section id="viewPallets" class="hidden space-y-3">
+      <div class="surface rounded-2xl border p-3.5 shadow-sm space-y-3">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 class="text-sm font-bold">Палети (1–44) та вітрини</h2>
+            <p class="text-hint text-xs">Ліміт палети: 16 шт. Натисніть для перегляду складу локації.</p>
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <button id="suggestPalletsBtn" type="button" class="surface rounded-xl border px-3 py-1.5 text-xs font-semibold">💡 Куди поставити?</button>
+            <button id="openMovePalletModalBtn" type="button" class="tg-btn rounded-xl px-3 py-1.5 text-xs font-semibold shadow-sm">🚚 Перенести палету</button>
+          </div>
+        </div>
+        <div id="suggestBox" class="hidden rounded-xl bg-emerald-500/10 p-3 text-xs text-emerald-700 dark:text-emerald-300"></div>
+      </div>
+      <div id="specialLocsGrid" class="grid grid-cols-1 gap-2.5 sm:grid-cols-3"></div>
+      <div id="palletsGrid" class="grid grid-cols-2 gap-2.5 sm:grid-cols-4"></div>
+    </section>
+
+    <!-- VIEW 3: ПОВНИЙ БЛОК СТАТИСТИКИ (13 РОЗДІЛІВ ЯК У БОТІ) -->
+    <section id="viewStats" class="hidden space-y-3">
+      <div class="surface rounded-2xl border p-3.5 shadow-sm space-y-2.5">
+        <div class="flex items-center justify-between">
+          <h2 class="text-sm font-bold">📊 Статистика — оберіть розділ</h2>
+          <span id="statsActiveLabel" class="text-hint text-xs">Повна</span>
+        </div>
+        <div class="grid grid-cols-2 gap-2 sm:grid-cols-3">
+          <button type="button" data-stat="sizes" class="stat-menu-btn rounded-xl px-3 py-2 text-xs font-semibold text-left transition">📏 Розміри</button>
+          <button type="button" data-stat="brands" class="stat-menu-btn rounded-xl px-3 py-2 text-xs font-semibold text-left transition">🏭 Бренди</button>
+          <button type="button" data-stat="locations" class="stat-menu-btn rounded-xl px-3 py-2 text-xs font-semibold text-left transition">📍 Локації</button>
+          <button type="button" data-stat="movement" class="stat-menu-btn rounded-xl px-3 py-2 text-xs font-semibold text-left transition">🔄 Рух</button>
+          <button type="button" data-stat="quality" class="stat-menu-btn rounded-xl px-3 py-2 text-xs font-semibold text-left transition">🧪 Якість даних</button>
+          <button type="button" data-stat="sklad" class="stat-menu-btn rounded-xl px-3 py-2 text-xs font-semibold text-left transition">⚖️ Склад</button>
+          <button type="button" data-stat="zal" class="stat-menu-btn rounded-xl px-3 py-2 text-xs font-semibold text-left transition">🪟 Вітрина зал</button>
+          <button type="button" data-stat="charts" class="stat-menu-btn rounded-xl px-3 py-2 text-xs font-semibold text-left transition">📈 Графіки</button>
+          <button type="button" data-stat="sales" class="stat-menu-btn rounded-xl px-3 py-2 text-xs font-semibold text-left transition">💰 Звірка продажів</button>
+          <button type="button" data-stat="excel" class="stat-menu-btn rounded-xl px-3 py-2 text-xs font-semibold text-left transition">📥 Excel-дашборд</button>
+          <button type="button" data-stat="zakupivlya" class="stat-menu-btn rounded-xl px-3 py-2 text-xs font-semibold text-left transition">🛒 Закупівля</button>
+          <button type="button" data-stat="plan" class="stat-menu-btn rounded-xl px-3 py-2 text-xs font-semibold text-left transition">🧮 План перевірок</button>
+          <button type="button" data-stat="full" class="stat-menu-btn col-span-2 sm:col-span-3 rounded-xl px-3 py-2 text-xs font-semibold text-center transition">📋 Повна</button>
+        </div>
+      </div>
+
+      <div id="statsContentArea" class="space-y-3"></div>
+    </section>
+
+    <!-- VIEW 4: ОПТИМІЗАЦІЯ (/optimize, /unload, /cleanup) -->
+    <section id="viewOptimize" class="hidden space-y-3">
+      <div class="surface rounded-2xl border p-4 shadow-sm space-y-3">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 class="text-base font-bold">🧹 Оптимізація палет (1–44)</h2>
+            <p class="text-hint text-xs">Усунення перевантаження (&gt;16 шт.) та ущільнення палет як у команді /optimize</p>
+          </div>
+          <div class="flex gap-1.5">
+            <button type="button" data-optmode="min" class="opt-mode-btn rounded-xl px-3 py-1.5 text-xs font-semibold transition">Мінімум палет</button>
+            <button type="button" data-optmode="over" class="opt-mode-btn rounded-xl px-3 py-1.5 text-xs font-semibold transition">Тільки перевантажені</button>
+          </div>
+        </div>
+        <div id="optSummaryKPIs" class="grid grid-cols-2 gap-2 sm:grid-cols-4"></div>
+        <div class="flex flex-wrap gap-2 pt-1">
+          <button id="applyOptPlanBtn" type="button" class="tg-btn flex-1 rounded-xl py-2.5 text-xs font-semibold shadow-sm disabled:opacity-40">
+            ✅ Застосувати план
+          </button>
+          <button id="undoOptPlanBtn" type="button" class="surface hidden rounded-xl border px-4 py-2.5 text-xs font-semibold text-amber-600 dark:text-amber-400">
+            ↩️ Скасувати оптимізацію
+          </button>
+          <button id="cleanupZeroBtn" type="button" class="rounded-xl border border-rose-500/40 px-3.5 py-2.5 text-xs font-semibold text-rose-500">
+            🧹 Очистити 0 шт.
+          </button>
+        </div>
+      </div>
+
+      <div id="optMovesList" class="surface rounded-2xl border p-4 shadow-sm space-y-2"></div>
+    </section>
+  </main>
+
+  <!-- Bottom Navigation (4 tabs) -->
+  <nav class="surface fixed bottom-0 left-0 right-0 z-30 border-t px-2 py-1.5 backdrop-blur">
+    <div class="mx-auto grid max-w-4xl grid-cols-4 gap-1">
+      <button type="button" data-tab="catalog" class="nav-tab flex flex-col items-center justify-center rounded-xl py-1.5 text-[11px] font-semibold">
+        <span class="text-base leading-none mb-1">🔍</span><span>Склад</span>
+      </button>
+      <button type="button" data-tab="pallets" class="nav-tab flex flex-col items-center justify-center rounded-xl py-1.5 text-[11px] font-semibold">
+        <span class="text-base leading-none mb-1">📦</span><span>Палети</span>
+      </button>
+      <button type="button" data-tab="stats" class="nav-tab flex flex-col items-center justify-center rounded-xl py-1.5 text-[11px] font-semibold">
+        <span class="text-base leading-none mb-1">📊</span><span>Статистика</span>
+      </button>
+      <button type="button" data-tab="optimize" class="nav-tab flex flex-col items-center justify-center rounded-xl py-1.5 text-[11px] font-semibold">
+        <span class="text-base leading-none mb-1">🧹</span><span>Оптимізація</span>
+      </button>
+    </div>
+  </nav>
+
+  <!-- Modal: Add Tire -->
+  <div id="addTireModal" class="fixed inset-0 z-50 hidden items-end justify-center bg-black/50 sm:items-center sm:p-4">
+    <div class="surface w-full max-w-md rounded-t-3xl border p-5 shadow-2xl sm:rounded-3xl">
+      <div class="mb-4 flex items-center justify-between">
+        <h3 class="text-base font-bold">➕ Додати автошину</h3>
+        <button id="closeAddModalBtn" type="button" class="text-hint px-2 py-1 text-sm font-bold">✕</button>
+      </div>
+      <form id="addTireForm" class="space-y-3">
+        <div class="grid grid-cols-2 gap-2.5">
+          <div>
+            <label for="newLocInput" class="mb-1 block text-xs font-semibold">Локація (палета / вітрина)</label>
+            <input id="newLocInput" type="text" required placeholder="12 або вітрина зал" class="surface w-full rounded-xl border px-3 py-2 text-sm outline-none" />
+          </div>
+          <div>
+            <label for="newQtyInput" class="mb-1 block text-xs font-semibold">Кількість (шт.)</label>
+            <input id="newQtyInput" type="number" min="1" required value="4" class="surface w-full rounded-xl border px-3 py-2 text-sm outline-none" />
+          </div>
+        </div>
+        <div class="grid grid-cols-2 gap-2.5">
+          <div>
+            <label for="newCodeInput" class="mb-1 block text-xs font-semibold">Код товару</label>
+            <input id="newCodeInput" type="text" required placeholder="40769205" class="surface w-full rounded-xl border px-3 py-2 text-sm outline-none" />
+          </div>
+          <div>
+            <label for="newSizeInput" class="mb-1 block text-xs font-semibold">Розмір</label>
+            <input id="newSizeInput" type="text" required placeholder="205/55R16" class="surface w-full rounded-xl border px-3 py-2 text-sm outline-none" />
+          </div>
+        </div>
+        <div>
+          <label for="newNameInput" class="mb-1 block text-xs font-semibold">Тип (модель) резини</label>
+          <input id="newNameInput" type="text" required placeholder="Автошина 205/55R16 94H HANKOOK W636, зима" class="surface w-full rounded-xl border px-3 py-2 text-sm outline-none" />
+        </div>
+        <div class="flex gap-2 pt-2">
+          <button id="cancelAddModalBtn" type="button" class="surface flex-1 rounded-xl border py-2.5 text-sm font-semibold">Скасувати</button>
+          <button type="submit" class="tg-btn flex-1 rounded-xl py-2.5 text-sm font-semibold shadow-sm">Зберегти</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Move Item -->
+  <div id="moveItemModal" class="fixed inset-0 z-50 hidden items-end justify-center bg-black/50 sm:items-center sm:p-4">
+    <div class="surface w-full max-w-md rounded-t-3xl border p-5 shadow-2xl sm:rounded-3xl space-y-3">
+      <div class="flex items-center justify-between">
+        <h3 class="text-base font-bold">🚚 Перемістити шини</h3>
+        <button id="closeMoveModalBtn" type="button" class="text-hint px-2 py-1 text-sm font-bold">✕</button>
+      </div>
+      <p id="moveItemTitle" class="text-xs font-semibold"></p>
+      <form id="moveItemForm" class="space-y-3">
+        <div>
+          <label for="moveToInput" class="mb-1 block text-xs font-semibold">Куди перемістити (№ палети або вітрина зал/вулиця/фасад)</label>
+          <input id="moveToInput" type="text" required placeholder="Напр. 14 або вітрина зал" class="surface w-full rounded-xl border px-3 py-2 text-sm outline-none" />
+        </div>
+        <div>
+          <label for="moveQtyInput" class="mb-1 block text-xs font-semibold">Кількість</label>
+          <input id="moveQtyInput" type="number" min="1" required class="surface w-full rounded-xl border px-3 py-2 text-sm outline-none" />
+        </div>
+        <div class="flex gap-2 pt-1">
+          <button id="cancelMoveModalBtn" type="button" class="surface flex-1 rounded-xl border py-2.5 text-sm font-semibold">Скасувати</button>
+          <button type="submit" class="tg-btn flex-1 rounded-xl py-2.5 text-sm font-semibold shadow-sm">Перемістити</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Move Entire Pallet -->
+  <div id="movePalletModal" class="fixed inset-0 z-50 hidden items-end justify-center bg-black/50 sm:items-center sm:p-4">
+    <div class="surface w-full max-w-md rounded-t-3xl border p-5 shadow-2xl sm:rounded-3xl space-y-3">
+      <div class="flex items-center justify-between">
+        <h3 class="text-base font-bold">📦 Перенести всю локацію</h3>
+        <button id="closeMovePalletBtn" type="button" class="text-hint px-2 py-1 text-sm font-bold">✕</button>
+      </div>
+      <form id="movePalletForm" class="space-y-3">
+        <div>
+          <label for="mpFromSelect" class="mb-1 block text-xs font-semibold">Звідки</label>
+          <select id="mpFromSelect" class="surface w-full rounded-xl border px-3 py-2 text-sm outline-none"></select>
+        </div>
+        <div>
+          <label for="mpToInput" class="mb-1 block text-xs font-semibold">Куди (№ палети або вітрина зал/вулиця/фасад)</label>
+          <input id="mpToInput" type="text" required placeholder="Напр. 22" class="surface w-full rounded-xl border px-3 py-2 text-sm outline-none" />
+        </div>
+        <div class="flex gap-2 pt-1">
+          <button id="cancelMovePalletBtn" type="button" class="surface flex-1 rounded-xl border py-2.5 text-sm font-semibold">Скасувати</button>
+          <button type="submit" class="tg-btn flex-1 rounded-xl py-2.5 text-sm font-semibold shadow-sm">Перенести все</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="toastEl" class="pointer-events-none fixed left-1/2 top-16 z-50 hidden -translate-x-1/2 rounded-full bg-slate-900 px-4 py-2 text-xs font-semibold text-white shadow-lg dark:bg-slate-100 dark:text-slate-900"></div>
+
+  <script>
+    const INITIAL_TIRES = [{"id": 1, "row": 4, "pallet": "2", "code": "40769154", "size": "205/55R16", "name": "Автошина 205/55R16 91T AOSEN HW518+, зима", "qty": 15}, {"id": 2, "row": 5, "pallet": "2", "code": "40763672", "size": "185/60R15", "name": "Автошина 185/60R15 XL 88H TRIANGLE TW401 , зима", "qty": 1}, {"id": 3, "row": 6, "pallet": "3", "code": "40763675", "size": "205/55R16", "name": "Автошина 205/55R16 91R MARSHAL KW31 ,зима", "qty": 5}, {"id": 4, "row": 7, "pallet": "3", "code": "40769020", "size": "205/55R16", "name": "Автошина 205/55R16 PREMIORRI Vimero 4Seasons 94V XL, літо", "qty": 1}, {"id": 5, "row": 8, "pallet": "3", "code": "40763645", "size": "165/70R14", "name": "Автошина 165/70R14 81T POWERTRAC SNOWTOUR PRO XL 85T, зима", "qty": 3}, {"id": 6, "row": 9, "pallet": "4", "code": "40745801", "size": "215/55R17", "name": "Автошина 215/55R17 PETLAS W661 98T, зима", "qty": 2}, {"id": 7, "row": 10, "pallet": "4", "code": "40745754", "size": "205/55R16", "name": "Автошина 205/55R16 91T PETLAS W661, зима", "qty": 1}, {"id": 8, "row": 11, "pallet": "4", "code": "40763628", "size": "185/65R14", "name": "Автошина 185/65R14 86T POWERTRAC SNOWTOUR PRO, зима", "qty": 1}, {"id": 9, "row": 12, "pallet": "4", "code": "40763779", "size": "205/65R15", "name": "Автошина 205/65R15 MARSHAL KW31 99R, зима", "qty": 1}, {"id": 10, "row": 13, "pallet": "4", "code": "40745905", "size": "185/60R14", "name": "Автошина 185/60R14 82T TRIANGLE TR777, зима", "qty": 1}, {"id": 11, "row": 14, "pallet": "5", "code": "40714523", "size": "195/65R15", "name": "Автошина 195/65R15 91T Premiorri ViaMaggiore, зима", "qty": 2}, {"id": 12, "row": 15, "pallet": "5", "code": "40763622", "size": "205/65R15", "name": "Автошина 205/65R15 94H POWERTRAC SNOWTOUR PRO,зима", "qty": 8}, {"id": 13, "row": 16, "pallet": "6", "code": "40763629", "size": "185/70R14", "name": "Автошина 185/70R14 88T TRIANGLE TW401,зима", "qty": 1}, {"id": 14, "row": 17, "pallet": "6", "code": "40769204", "size": "215/65R16", "name": "Автошина 215/65R16 HIFLY WIN-TURI 212 98H,зима", "qty": 5}, {"id": 15, "row": 18, "pallet": "6", "code": "40763779", "size": "205/65R15", "name": "Автошина 205/65R15 MARSHAL KW31 99R,зима", "qty": 2}, {"id": 16, "row": 19, "pallet": "7", "code": "40763779", "size": "205/65R15", "name": "Автошина 205/65R15 MARSHAL KW31 99R,зима", "qty": 3}, {"id": 17, "row": 20, "pallet": "7", "code": "40763596", "size": "205/65R16", "name": "Автошина 205/65R16H 95H HANKOOK W462, зима", "qty": 3}, {"id": 18, "row": 21, "pallet": "7", "code": "40745816", "size": "205/65R15", "name": "Автошина 205/65R15 94T PETLAS W661,зима", "qty": 1}, {"id": 19, "row": 22, "pallet": "7", "code": "40769020", "size": "205/55R16", "name": "Автошина 205/55R16 PREMIORRI Vimero 4Seasons 94V XL, літо", "qty": 1}, {"id": 20, "row": 23, "pallet": "7", "code": "40745903", "size": "175/65R14", "name": "Автошина 175/65R14 86T HANKOOK W462 XL,зима", "qty": 2}, {"id": 21, "row": 24, "pallet": "7", "code": "40763668", "size": "175/65R14", "name": "Автошина 175/65R14 82T PETLAS SNOWMASTER 2,зима", "qty": 1}, {"id": 22, "row": 25, "pallet": "7", "code": "40745926", "size": "185/60R14", "name": "Автошина 185/60R14 82H PETLAS SNOWMASTER 2,зима", "qty": 1}, {"id": 23, "row": 26, "pallet": "8", "code": "40763622", "size": "205/65R15", "name": "Автошина 205/65R15 94H POWERTRAC SNOWTOUR PRO,зима", "qty": 5}, {"id": 24, "row": 27, "pallet": "8", "code": "40745925", "size": "185/60R14", "name": "Автошина 185/60R14 82T POWERTRAC SNOWTOUR PRO, зима", "qty": 1}, {"id": 25, "row": 28, "pallet": "9", "code": "40745905", "size": "185/60R14", "name": "Автошина 185/60R14 82T TRIANGLE TR777,зима", "qty": 12}, {"id": 26, "row": 29, "pallet": "10", "code": "40769153", "size": "195/65R15", "name": "Автошина 195/65R15 91T AOSEN HW518+, зима", "qty": 8}, {"id": 27, "row": 30, "pallet": "11", "code": "40745640", "size": "205/60R16", "name": "Автошина 205/60/R16 92H PREMIORRI VIAMAGGIORE Z PLUS,зима", "qty": 6}, {"id": 28, "row": 31, "pallet": "11", "code": "40769160", "size": "205/60R16", "name": "Автошина 205/60R16 92T AOSEN HW518+, зима", "qty": 2}, {"id": 29, "row": 32, "pallet": "11", "code": "40769153", "size": "195/65R15", "name": "Автошина 195/65R15 91T AOSEN HW518+, зима", "qty": 2}, {"id": 30, "row": 33, "pallet": "12", "code": "40714805", "size": "185/65R14", "name": "Автошина 185/65R14 86T TRIANGLE TR777", "qty": 3}, {"id": 31, "row": 34, "pallet": "12", "code": "40763699", "size": "205/55R16", "name": "Автошина 205/55R16 94H HANKOOK W636 XL,зима", "qty": 3}, {"id": 32, "row": 35, "pallet": "13", "code": "40763777", "size": "195/65R15", "name": "Автошина 195/65R15 TRIANGLE TR777 91T,зима", "qty": 4}, {"id": 33, "row": 36, "pallet": "13", "code": "40745183", "size": "205/60R16", "name": "Автошина 205/60R16 96R TRIANGLE PL01", "qty": 4}, {"id": 34, "row": 37, "pallet": "13", "code": "40763565", "size": "175/65R14", "name": "Автошина 175/65R14 82T PETLAS W661,зима", "qty": 3}, {"id": 35, "row": 38, "pallet": "16", "code": "40745183", "size": "205/60R16", "name": "Автошина 205/60R16 96R TRIANGLE PL01", "qty": 2}, {"id": 36, "row": 39, "pallet": "16", "code": "40763699", "size": "205/55R16", "name": "Автошина 205/55R16 94H HANKOOK W636 XL,зима", "qty": 3}, {"id": 37, "row": 40, "pallet": "18", "code": "40745623", "size": "175/70R13", "name": "Автошина 175/70R13 82T TRIANGLE TR777 , зима", "qty": 2}, {"id": 38, "row": 41, "pallet": "18", "code": "40763827", "size": "185/65R15", "name": "Автошина 185/65R15 TRIANGLE TR777 92T, XLзима", "qty": 3}, {"id": 39, "row": 42, "pallet": "18", "code": "40763742", "size": "215/55R17", "name": "Автошина 215/55R17 98V PETLAS SNOWMASTER 2 SPORT XL,зима", "qty": 4}, {"id": 40, "row": 43, "pallet": "19", "code": "40714519", "size": "185/60R14", "name": "Автошина 185/60R14 82T Premiorri ViaMaggiore, зима", "qty": 2}, {"id": 41, "row": 44, "pallet": "19", "code": "40763699", "size": "205/55R16", "name": "Автошина 205/55R16 94H HANKOOK W636 XL,зима", "qty": 2}, {"id": 42, "row": 45, "pallet": "19", "code": "40769193", "size": "185/60R14", "name": "Автошина 185/60R14 HIFLY WIN-TURI 212 82T,зима", "qty": 3}, {"id": 43, "row": 46, "pallet": "20", "code": "40763802", "size": "215/65R16", "name": "Автошина 215/65R16 102H TRIANGLE TW401 XL,зима", "qty": 16}, {"id": 44, "row": 47, "pallet": "21", "code": "40763802", "size": "215/65R16", "name": "Автошина 215/65R16 102H TRIANGLE TW401 XL,зима", "qty": 15}, {"id": 45, "row": 48, "pallet": "23", "code": "40745623", "size": "175/70R13", "name": "Автошина 175/70R13 82T TRIANGLE TR777 , зима", "qty": 18}, {"id": 46, "row": 49, "pallet": "24", "code": "40745904", "size": "175/70R14", "name": "Автошина 175/70R14 88T TRIANGLE TR777 XL,зима", "qty": 1}, {"id": 47, "row": 50, "pallet": "26", "code": "40769155", "size": "215/55R16", "name": "Автошина 215/55R16 93T AOSEN HW518, зима", "qty": 6}, {"id": 48, "row": 51, "pallet": "26", "code": "40769159", "size": "225/50R17", "name": "Автошина 225/50R17 94T AOSEN HW518, зима", "qty": 2}, {"id": 49, "row": 52, "pallet": "27", "code": "40745623", "size": "175/70R13", "name": "Автошина 175/70R13 82T TRIANGLE TR777 , зима", "qty": 1}, {"id": 50, "row": 53, "pallet": "27", "code": "40763671", "size": "185/60R15", "name": "Автошина 185/60R15 XL 88H POWERTRAC SNOWTOUR PRO, зима", "qty": 1}, {"id": 51, "row": 54, "pallet": "27", "code": "40745375", "size": "185/65R14", "name": "Автошина 185/65R14 Estrada Samurai 86T , зима", "qty": 6}, {"id": 52, "row": 55, "pallet": "27", "code": "40763675", "size": "205/55R16", "name": "Автошина 205/55R16 91R MARSHAL KW31 ,зима", "qty": 2}, {"id": 53, "row": 56, "pallet": "27", "code": "40763622", "size": "205/65R15", "name": "Автошина 205/65R15 94H POWERTRAC SNOWTOUR PRO,зима", "qty": 2}, {"id": 54, "row": 57, "pallet": "27", "code": "40763672", "size": "185/60R15", "name": "Автошина 185/60R15 XL 88H TRIANGLE TW401 , зима", "qty": 1}, {"id": 55, "row": 58, "pallet": "28", "code": "40745903", "size": "175/65R14", "name": "Автошина 175/65R14 86T HANKOOK W462 XL,зима", "qty": 4}, {"id": 56, "row": 59, "pallet": "28", "code": "40745908", "size": "185/65R15", "name": "Автошина 185/65R15 92T HANKOOK XL IZ2 W462,зима", "qty": 1}, {"id": 57, "row": 60, "pallet": "28", "code": "40763596", "size": "205/65R16", "name": "Автошина 205/65R16H 95H HANKOOK W462, зима", "qty": 8}, {"id": 58, "row": 61, "pallet": "29", "code": "40763675", "size": "205/55R16", "name": "Автошина 205/55R16 91R MARSHAL KW31 ,зима", "qty": 3}, {"id": 59, "row": 62, "pallet": "29", "code": "40763779", "size": "205/65/R15", "name": "Автошина 205/65R15 MARSHAL KW31 99R,зима", "qty": 1}, {"id": 60, "row": 63, "pallet": "29", "code": "40745800", "size": "215/55R16", "name": "Автошина 215/55R16 PETLAS W661 97T XL,зима", "qty": 4}, {"id": 61, "row": 64, "pallet": "29", "code": "40745801", "size": "215/55R17", "name": "Автошина 215/55R17 PETLAS W661 98T,зима", "qty": 1}, {"id": 62, "row": 65, "pallet": "29", "code": "40745803", "size": "215/55R17", "name": "Автошина 225/50/R17 98T W661 PETLAS,зима", "qty": 3}, {"id": 63, "row": 66, "pallet": "29", "code": "40745816", "size": "205/65R15", "name": "Автошина 205/65R15 94T PETLAS W661,зима", "qty": 2}, {"id": 64, "row": 67, "pallet": "30", "code": "40763622", "size": "205/65R15", "name": "Автошина 205/65R15 94H POWERTRAC SNOWTOUR PRO,зима", "qty": 16}, {"id": 65, "row": 68, "pallet": "31", "code": "40769020", "size": "205/55R16", "name": "Автошина 205/55R16 PREMIORRI Vimero 4Seasons 94V XL, літо", "qty": 3}, {"id": 66, "row": 69, "pallet": "31", "code": "40763772", "size": "225/50R17", "name": "Автошина 225/50R17 94H Horizon HW508, зима", "qty": 1}, {"id": 67, "row": 70, "pallet": "31", "code": "40763668", "size": "175/65R14", "name": "Автошина 175/65R14 82T PETLAS SNOWMASTER 2,зима", "qty": 1}, {"id": 68, "row": 71, "pallet": "32", "code": "40745623", "size": "175/70R13", "name": "Автошина 175/70R13 82T TRIANGLE TR777 , зима", "qty": 9}, {"id": 69, "row": 72, "pallet": "32", "code": "40763643", "size": "195/65R15", "name": "Автошина 195/65R15 MARSHAL KW31 91R,зима", "qty": 6}, {"id": 70, "row": 73, "pallet": "вітрина вулиця", "code": "40714519", "size": "185/60R14", "name": "Автошина 185/60R14 82T Premiorri ViaMaggiore, зима", "qty": 1}, {"id": 71, "row": 74, "pallet": "вітрина вулиця", "code": "40714523", "size": "195/65R15", "name": "Автошина 195/65R15 91T Premiorri ViaMaggiore, зима", "qty": 1}, {"id": 72, "row": 75, "pallet": "вітрина вулиця", "code": "40735206", "size": "175/70R13", "name": "Автошина 175/70R13 82T Rosava БЦ-20, всесезонка", "qty": 1}, {"id": 73, "row": 76, "pallet": "вітрина вулиця", "code": "40763668", "size": "175/65R14", "name": "Автошина 175/65R14 82T PETLAS SNOWMASTER 2,зима", "qty": 1}, {"id": 74, "row": 77, "pallet": "вітрина вулиця", "code": "40745375", "size": "185/65R14", "name": "Автошина 185/65R14 Estrada Samurai 86T , зима", "qty": 1}, {"id": 75, "row": 78, "pallet": "вітрина вулиця", "code": "40745623", "size": "175/70R13", "name": "Автошина 175/70R13 82T TRIANGLE TR777 , зима", "qty": 1}, {"id": 76, "row": 79, "pallet": "вітрина вулиця", "code": "40745633", "size": "185/65R15", "name": "Автошина 185/65R15 88H PREMIORRI VIAMAGGIORE Z PLUS,зима", "qty": 1}, {"id": 77, "row": 80, "pallet": "вітрина вулиця", "code": "40745706", "size": "175/65R14", "name": "Автошина 175/65R14 86T TRIANGLE TR777 XL,зима", "qty": 1}, {"id": 78, "row": 81, "pallet": "вітрина вулиця", "code": "40769195", "size": "185/65R14", "name": "Автошина 185/65R14 HIFLY WIN-TURI 212 86T,зима", "qty": 1}, {"id": 79, "row": 82, "pallet": "вітрина вулиця", "code": "40769153", "size": "195/65R15", "name": "Автошина 195/65R15 91T AOSEN HW518+, зима", "qty": 1}, {"id": 80, "row": 83, "pallet": "вітрина вулиця", "code": "40763777", "size": "195/65R15", "name": "Автошина 195/65R15 TRIANGLE TR777 91T,зима", "qty": 1}, {"id": 81, "row": 84, "pallet": "вітрина вулиця", "code": "40769198", "size": "205/55R16", "name": "Автошина 205/55R16 HIFLY WIN-TURI 212 91H,зима", "qty": 1}, {"id": 82, "row": 85, "pallet": "вітрина вулиця", "code": "40769160", "size": "205/60R16", "name": "Автошина 205/60R16 92T AOSEN HW518+, зима", "qty": 1}, {"id": 83, "row": 86, "pallet": "вітрина вулиця", "code": "40769199", "size": "205/60R16", "name": "Автошина 205/60R16 HIFLY WIN-TURI 212 92H,зима", "qty": 1}, {"id": 84, "row": 87, "pallet": "вітрина вулиця", "code": "40769200", "size": "205/65R15", "name": "Автошина 205/65R15 HIFLY WIN-TURI 212 94H,зима", "qty": 1}, {"id": 85, "row": 88, "pallet": "вітрина вулиця", "code": "40769155", "size": "215/55R16", "name": "Автошина 215/55R16 93T AOSEN HW518, зима", "qty": 1}, {"id": 86, "row": 89, "pallet": "вітрина вулиця", "code": "40769203", "size": "215/60R17", "name": "Автошина 215/60R17 HIFLY WIN-TURI 212 96H,зима", "qty": 1}, {"id": 87, "row": 90, "pallet": "вітрина вулиця", "code": "40769159", "size": "225/50R17", "name": "Автошина 225/50R17 94T AOSEN HW518, зима", "qty": 1}, {"id": 88, "row": 91, "pallet": "вітрина вулиця", "code": "40745922", "size": "175/70R13", "name": "Автошина 175/70R13 82T PETLAS SNOWMASTER 2, зима", "qty": 1}, {"id": 89, "row": 92, "pallet": "вітрина вулиця", "code": "40745926", "size": "185/60R14", "name": "Автошина 185/60R14 82H PETLAS SNOWMASTER 2,зима", "qty": 2}, {"id": 90, "row": 93, "pallet": "вітрина вулиця", "code": "40752325", "size": "195/65R15", "name": "Автошина 195/65R15 MATADOR MP62 ALL WHETHER EVO 91H, всесезона", "qty": 1}, {"id": 91, "row": 94, "pallet": "вітрина зал", "code": "40745186", "size": "155/70R13", "name": "Автошина 155/70R13 75T ROSAVA WQ-101,зима", "qty": 1}, {"id": 92, "row": 95, "pallet": "вітрина зал", "code": "40735206", "size": "175/70R13", "name": "Автошина 175/70R13 82T Rosava БЦ-20, всесезонка", "qty": 1}, {"id": 93, "row": 96, "pallet": "вітрина зал", "code": "40745922", "size": "175/70R13", "name": "Автошина 175/70R13 82T PETLAS SNOWMASTER 2, зима", "qty": 1}, {"id": 94, "row": 97, "pallet": "вітрина зал", "code": "40769191", "size": "175/70R13", "name": "Автошина 175/70R13 HIFLY WIN-TURI 212 82T,зима", "qty": 3}, {"id": 95, "row": 98, "pallet": "вітрина зал", "code": "40745757", "size": "175/70R13", "name": "Автошина 175/70R13 82T PETLAS W661 , зима", "qty": 1}, {"id": 96, "row": 99, "pallet": "вітрина зал", "code": "40745318", "size": "175/70R13", "name": "Автошина 175/70R13 ESTRADA SAMURAI 82T,зима", "qty": 1}, {"id": 97, "row": 100, "pallet": "вітрина зал", "code": "40745623", "size": "175/70R13", "name": "Автошина 175/70R13 82T TRIANGLE TR777 , зима", "qty": 1}, {"id": 98, "row": 101, "pallet": "вітрина зал", "code": "40763645", "size": "165/70R14", "name": "Автошина 165/70R14 81T POWERTRAC SNOWTOUR PRO XL 85T, зима", "qty": 1}, {"id": 99, "row": 102, "pallet": "вітрина зал", "code": "40745706", "size": "175/65R14", "name": "Автошина 175/65R14 86T TRIANGLE TR777 XL,зима", "qty": 1}, {"id": 100, "row": 103, "pallet": "вітрина зал", "code": "40745903", "size": "175/65R14", "name": "Автошина 175/65R14 86T HANKOOK W462 XL,зима", "qty": 1}, {"id": 101, "row": 104, "pallet": "вітрина зал", "code": "40763668", "size": "175/65R14", "name": "Автошина 175/65R14 82T PETLAS SNOWMASTER 2,зима", "qty": 1}, {"id": 102, "row": 105, "pallet": "вітрина зал", "code": "40769150", "size": "175/65R14", "name": "Автошина 175/65R14 82T AOSEN DW02, зима", "qty": 1}, {"id": 103, "row": 106, "pallet": "вітрина зал", "code": "40763807", "size": "175/65R14", "name": "Автошина 175/65R14 86H PREMIORRI Vimero 4Seasons, в.с", "qty": 1}, {"id": 104, "row": 107, "pallet": "вітрина зал", "code": "40714805", "size": "185/65R14", "name": "Автошина 185/65R14 86T TRIANGLE TR777", "qty": 2}, {"id": 105, "row": 108, "pallet": "вітрина зал", "code": "40745375", "size": "185/65R14", "name": "Автошина 185/65R14 Estrada Samurai 86T , зима", "qty": 1}, {"id": 106, "row": 109, "pallet": "вітрина зал", "code": "40769195", "size": "185/65R14", "name": "Автошина 185/65R14 HIFLY WIN-TURI 212 86T,зима", "qty": 1}, {"id": 107, "row": 110, "pallet": "вітрина зал", "code": "40745926", "size": "185/60R14", "name": "Автошина 185/60R14 82H PETLAS SNOWMASTER 2,зима", "qty": 1}, {"id": 108, "row": 111, "pallet": "вітрина зал", "code": "40763628", "size": "185/65R14", "name": "Автошина 185/65R14 86T POWERTRAC SNOWTOUR PRO,зима", "qty": 1}, {"id": 109, "row": 112, "pallet": "вітрина зал", "code": "40745905", "size": "185/60R14", "name": "Автошина 185/60R14 82T TRIANGLE TR777,зима", "qty": 1}, {"id": 110, "row": 113, "pallet": "вітрина зал", "code": "40745925", "size": "185/60R14", "name": "Автошина 185/60R14 82T POWERTRAC SNOWTOUR PRO, зима", "qty": 1}, {"id": 111, "row": 114, "pallet": "вітрина зал", "code": "40745645", "size": "175/70R14", "name": "Автошина 175/70R14 88T ESTRADA Winterri,зима", "qty": 1}, {"id": 112, "row": 115, "pallet": "вітрина зал", "code": "40745904", "size": "175/70R14", "name": "Автошина 175/70R14 88T TRIANGLE TR777 XL,зима", "qty": 1}, {"id": 113, "row": 116, "pallet": "вітрина зал", "code": "40763672", "size": "185/60R15", "name": "Автошина 185/60R15 XL 88H TRIANGLE TW401 , зима", "qty": 1}, {"id": 114, "row": 117, "pallet": "вітрина зал", "code": "40763671", "size": "185/60R15", "name": "Автошина 185/60R15 XL 88H POWERTRAC SNOWTOUR PRO, зима", "qty": 1}, {"id": 115, "row": 118, "pallet": "вітрина зал", "code": "40745908", "size": "185/65R15", "name": "Автошина 185/65R15 92T HANKOOK XL IZ2 W462,зима", "qty": 1}, {"id": 116, "row": 119, "pallet": "вітрина зал", "code": "40763673", "size": "185/65R15", "name": "Автошина 185/65R15 92R MARSHAL KW31 XL ,зима", "qty": 1}, {"id": 117, "row": 120, "pallet": "вітрина зал", "code": "40752325", "size": "195/65R15", "name": "Автошина 195/65R15 MATADOR MP62 ALL WHETHER EVO 91H, всесезона", "qty": 1}, {"id": 118, "row": 121, "pallet": "вітрина зал", "code": "40763764", "size": "195/65R15", "name": "Автошина 195/65R15 91T Horizon HW508, зима [ЧВ-10%]/ Акц. - ПАК", "qty": 1}, {"id": 119, "row": 122, "pallet": "вітрина зал", "code": "40769153", "size": "195/65R15", "name": "Автошина 195/65R15 91T AOSEN HW518+, зима", "qty": 1}, {"id": 120, "row": 123, "pallet": "вітрина зал", "code": "40714523", "size": "195/65R15", "name": "Автошина 195/65R15 91T Premiorri ViaMaggiore, зима", "qty": 1}, {"id": 121, "row": 124, "pallet": "вітрина зал", "code": "40763622", "size": "205/65R15", "name": "Автошина 205/65R15 94H POWERTRAC SNOWTOUR PRO,зима", "qty": 1}, {"id": 122, "row": 125, "pallet": "вітрина зал", "code": "40745816", "size": "205/65R15", "name": "Автошина 205/65R15 94T PETLAS W661,зима", "qty": 1}, {"id": 123, "row": 126, "pallet": "вітрина зал", "code": "40763675", "size": "205/55R16", "name": "Автошина 205/55R16 91R MARSHAL KW31 ,зима", "qty": 1}, {"id": 124, "row": 127, "pallet": "вітрина зал", "code": "40763779", "size": "205/65R15", "name": "Автошина 205/65R15 MARSHAL KW31 99R,зима", "qty": 1}, {"id": 125, "row": 128, "pallet": "вітрина зал", "code": "40769020", "size": "205/55R16", "name": "Автошина 205/55R16 PREMIORRI Vimero 4Seasons 94V XL, літо", "qty": 1}, {"id": 126, "row": 129, "pallet": "вітрина зал", "code": "40769154", "size": "205/55R16", "name": "Автошина 205/55R16 91T AOSEN HW518+, зима", "qty": 1}, {"id": 127, "row": 130, "pallet": "вітрина зал", "code": "40769160", "size": "205/60R16", "name": "Автошина 205/60R16 92T AOSEN HW518+, зима", "qty": 1}, {"id": 128, "row": 131, "pallet": "вітрина зал", "code": "40745754", "size": "205/55R16", "name": "Автошина 205/55R16 91T PETLAS W661,зима", "qty": 1}, {"id": 129, "row": 132, "pallet": "вітрина зал", "code": "40763596", "size": "205/65R16", "name": "Автошина 205/65R16H 95H HANKOOK W462, зима", "qty": 1}, {"id": 130, "row": 133, "pallet": "вітрина зал", "code": "40745801", "size": "215/55R17", "name": "Автошина 215/55R17 PETLAS W661 98T,зима", "qty": 1}, {"id": 131, "row": 134, "pallet": "вітрина зал", "code": "40763713", "size": "215/65R16", "name": "Автошина 215/65R16 102T HANKOOK W636 XL,зима", "qty": 1}, {"id": 132, "row": 135, "pallet": "вітрина зал", "code": "40714527", "size": "215/65R16", "name": "Автошина 215/65R16 98T Premiorri ViaMaggiore, зима", "qty": 1}, {"id": 133, "row": 136, "pallet": "вітрина зал", "code": "40763767", "size": "215/60R16", "name": "Автошина 215/60R16 95T Horizon HW508, зима [ЧВ-10%]/ Акц. - ПАК", "qty": 1}, {"id": 134, "row": 137, "pallet": "вітрина зал", "code": "40769159", "size": "225/50R17", "name": "Автошина 225/50R17 94T AOSEN HW518, зима", "qty": 1}, {"id": 135, "row": 138, "pallet": "вітрина зал", "code": "40763772", "size": "225/50R17", "name": "Автошина 225/50R17 94H Horizon HW508, зима [ЧВ-10%]/ Акц. - ПАК", "qty": 1}, {"id": 136, "row": 139, "pallet": "вітрина зал", "code": "40745803", "size": "225/50R17", "name": "Автошина 225/50/R17 98T W661 PETLAS,зима", "qty": 1}, {"id": 137, "row": 140, "pallet": "вітрина зал", "code": "40769203", "size": "215/60R17", "name": "Автошина 215/60R17 HIFLY WIN-TURI 212 96H,зима", "qty": 1}, {"id": 138, "row": 141, "pallet": "вітрина зал", "code": "40763768", "size": "205/55R16", "name": "Автошина 205/55R16 91T Horizon HW508, зима", "qty": 1}, {"id": 139, "row": 142, "pallet": "палети фасад", "code": "40745751", "size": "195/65R15", "name": "Автошина 195/65R15 91T PETLAS W661, зима", "qty": 4}, {"id": 140, "row": 143, "pallet": "палети фасад", "code": "40745801", "size": "215/55R17", "name": "Автошина 215/55R17 PETLAS W661 98T,зима", "qty": 4}, {"id": 141, "row": 144, "pallet": "палети фасад", "code": "40745928", "size": "185/65R14", "name": "Автошина 185/65R14 86T PETLAS SNOWMASTER 2,зима", "qty": 2}, {"id": 142, "row": 145, "pallet": "палети фасад", "code": "40769150", "size": "175/65R14", "name": "Автошина 175/65R14 82T AOSEN DW02, зима", "qty": 4}, {"id": 143, "row": 146, "pallet": "палети фасад", "code": "40769153", "size": "195/65R15", "name": "Автошина 195/65R15 91T AOSEN HW518+, зима", "qty": 4}, {"id": 144, "row": 147, "pallet": "палети фасад", "code": "40769159", "size": "225/50R17", "name": "Автошина 225/50R17 94T AOSEN HW518, зима", "qty": 4}, {"id": 145, "row": 148, "pallet": "палети фасад", "code": "40769190", "size": "175/65R14", "name": "Автошина 175/65R14 HIFLY WIN-TURI 212 82T,зима", "qty": 4}, {"id": 146, "row": 149, "pallet": "палети фасад", "code": "40769191", "size": "175/70R13", "name": "Автошина 175/70R13 HIFLY WIN-TURI 212 82T,зима", "qty": 4}, {"id": 147, "row": 150, "pallet": "палети фасад", "code": "40745623", "size": "175/70R13", "name": "Автошина 175/70R13 82T TRIANGLE TR777 , зима", "qty": 4}, {"id": 148, "row": 151, "pallet": "палети фасад", "code": "40714805", "size": "185/65R14", "name": "Автошина 185/65R14 86T TRIANGLE TR777", "qty": 4}, {"id": 149, "row": 152, "pallet": "палети фасад", "code": "40745633", "size": "185/65R15", "name": "Автошина 185/65R15 88H PREMIORRI VIAMAGGIORE Z PLUS,зима", "qty": 2}, {"id": 150, "row": 153, "pallet": "палети фасад", "code": "40714523", "size": "195/65R15", "name": "Автошина 195/65R15 91T Premiorri ViaMaggiore, зима", "qty": 0}, {"id": 151, "row": 154, "pallet": "палети фасад", "code": "40763777", "size": "195/65R15", "name": "Автошина 195/65R15 TRIANGLE TR777 91T,зима", "qty": 4}, {"id": 152, "row": 155, "pallet": "палети фасад", "code": "40714401", "size": "205/55R16", "name": "Автошина 205/55R16 91T Premiorri ViaMaggiore, зима", "qty": 4}, {"id": 153, "row": 156, "pallet": "палети фасад", "code": "40745640", "size": "205/60R16", "name": "Автошина 205/60/R16 92H PREMIORRI VIAMAGGIORE Z PLUS,зима", "qty": 4}, {"id": 154, "row": 157, "pallet": "палети фасад", "code": "40745183", "size": "205/60R16", "name": "Автошина 205/60R16 96R TRIANGLE PL01", "qty": 4}, {"id": 155, "row": 158, "pallet": "7", "code": "40763675", "size": "205/55R16", "name": "Автошина 205/55R16 91R MARSHAL KW31 ,зима", "qty": 1}, {"id": 156, "row": 159, "pallet": "вітрина зал", "code": "40745817", "size": "215/55 R16", "name": "Автошина 215/55R16 97H PREMIORRI VIAMAGGIORE Z Plus, зима", "qty": 1}, {"id": 157, "row": 160, "pallet": "вітрина зал", "code": "40745903", "size": "175/65R14", "name": "Автошина 175/65R14 86T HANKOOK W462 XL,зима", "qty": 2}, {"id": 158, "row": 161, "pallet": "вітрина зал", "code": "40763675", "size": "205/55R16", "name": "Автошина 205/55R16 91R MARSHAL KW31 ,зима", "qty": 2}, {"id": 159, "row": 162, "pallet": "вітрина зал", "code": "40769155", "size": "215/55R16", "name": "Автошина 215/55R16 93T AOSEN HW518, зима", "qty": 1}, {"id": 160, "row": 163, "pallet": "вітрина зал", "code": "40769204", "size": "215/65R16", "name": "Автошина 215/65R16 HIFLY WIN-TURI 212 98H,зима", "qty": 1}, {"id": 161, "row": 164, "pallet": "вітрина зал", "code": "40769198", "size": "205/55R16", "name": "Автошина 205/55R16 HIFLY WIN-TURI 212 91H,зима", "qty": 1}, {"id": 162, "row": 165, "pallet": "вітрина зал", "code": "40745625", "size": "205/55R16", "name": "Автошина 205/55R16 94V TRIANGLE TR777 XL, зима", "qty": 1}, {"id": 163, "row": 166, "pallet": "вітрина зал", "code": "40763802", "size": "215/65R16", "name": "Автошина 215/65R16 102H TRIANGLE TW401 XL,зима", "qty": 1}, {"id": 164, "row": 167, "pallet": "вітрина зал", "code": "40769196", "size": "185/65R15", "name": "Автошина 185/65R15 HIFLY WIN-TURI 212 88T,зима", "qty": 1}, {"id": 165, "row": 168, "pallet": "вітрина зал", "code": "40763643", "size": "195/65R15", "name": "Автошина 195/65R15 MARSHAL KW31 91R,зима", "qty": 1}, {"id": 166, "row": 169, "pallet": "вітрина зал", "code": "40763777", "size": "195/65R15", "name": "Автошина 195/65R15 TRIANGLE TR777 91T,зима", "qty": 1}, {"id": 167, "row": 170, "pallet": "вітрина зал", "code": "40745751", "size": "195/65R15", "name": "Автошина 195/65R15 91T PETLAS W661, зима", "qty": 1}, {"id": 168, "row": 171, "pallet": "вітрина зал", "code": "40769193", "size": "185/60R14", "name": "Автошина 185/60R14 HIFLY WIN-TURI 212 82T,зима", "qty": 1}, {"id": 169, "row": 172, "pallet": "вітрина зал", "code": "40714519", "size": "185/60R14", "name": "Автошина 185/60R14 82T Premiorri ViaMaggiore, зима", "qty": 1}, {"id": 170, "row": 173, "pallet": "вітрина зал", "code": "40769190", "size": "175/65R14", "name": "Автошина 175/65R14 HIFLY WIN-TURI 212 82T,зима", "qty": 1}, {"id": 171, "row": 174, "pallet": "вітрина зал", "code": "40763827", "size": "185/65R15", "name": "Автошина 185/65R15 TRIANGLE TR777 92T, XLзима", "qty": 1}, {"id": 172, "row": 175, "pallet": "вітрина зал", "code": "40769199", "size": "205/60R16", "name": "Автошина 205/60R16 HIFLY WIN-TURI 212 92H,зима", "qty": 1}, {"id": 173, "row": 176, "pallet": "вітрина зал", "code": "40769156", "size": "215/60R16", "name": "Автошина 215/60R16 95T AOSEN HW508,зима", "qty": 1}, {"id": 174, "row": 177, "pallet": "вітрина зал", "code": "40769205", "size": "225/50R17", "name": "Автошина 225/50/R17 HIFLY WIN-TURI 216 98H, XL,зима", "qty": 1}, {"id": 175, "row": 178, "pallet": "8", "code": "40714805", "size": "185/65R14", "name": "Автошина 185/65R14 86T TRIANGLE TR777", "qty": 1}, {"id": 176, "row": 179, "pallet": "вітрина зал", "code": "40763565", "size": "175/65R14", "name": "Автошина 175/65R14 82T PETLAS W661,зима", "qty": 1}, {"id": 177, "row": 180, "pallet": "вітрина зал", "code": "40763629", "size": "185/70R14", "name": "Автошина 185/70R14 88T TRIANGLE TW401,зима", "qty": 1}, {"id": 178, "row": 181, "pallet": "палети фасад", "code": "40769020", "size": "205/55R16", "name": "Автошина 205/55R16 PREMIORRI Vimero 4Seasons 94V XL, літо", "qty": 4}, {"id": 179, "row": 182, "pallet": "палети фасад", "code": "40735206", "size": "175/70R13", "name": "Автошина 175/70/R13 82T Rosava БЦ-20, всесезонка", "qty": 4}, {"id": 180, "row": 183, "pallet": "палети фасад", "code": "40745922", "size": "175/70R13", "name": "Автошина 175/70R13 82T PETLAS SNOWMASTER 2, зима", "qty": 4}, {"id": 181, "row": 184, "pallet": "палети фасад", "code": "40769199", "size": "205/60R16", "name": "Автошина 205/60R16 HIFLY WIN-TURI 212 92H,зима", "qty": 4}, {"id": 182, "row": 185, "pallet": "палети фасад", "code": "40769196", "size": "185/65R15", "name": "Автошина 185/65R15 HIFLY WIN-TURI 212 88T,зима", "qty": 4}, {"id": 183, "row": 186, "pallet": "вітрина вулиця", "code": "40769191", "size": "175/70R13", "name": "Автошина 175/70R13 HIFLY WIN-TURI 212 82T,зима", "qty": 1}, {"id": 184, "row": 187, "pallet": "вітрина вулиця", "code": "40745757", "size": "175/70R13", "name": "Автошина 175/70R13 82T PETLAS W661 , зима", "qty": 1}, {"id": 185, "row": 188, "pallet": "вітрина вулиця", "code": "40745903", "size": "175/65R14", "name": "Автошина 175/65R14 86T HANKOOK W462 XL,зима", "qty": 1}, {"id": 186, "row": 189, "pallet": "вітрина вулиця", "code": "40763643", "size": "195/65R15", "name": "Автошина 195/65R15 MARSHAL KW31 91R,зима", "qty": 1}, {"id": 187, "row": 190, "pallet": "вітрина вулиця", "code": "40745751", "size": "195/65R15", "name": "Автошина 195/65R15 91T PETLAS W661, зима", "qty": 1}, {"id": 188, "row": 191, "pallet": "вітрина вулиця", "code": "40769205", "size": "225/50R17", "name": "Автошина 225/50/R17 HIFLY WIN-TURI 216 98H, XL,зима", "qty": 1}, {"id": 189, "row": 192, "pallet": "4", "code": "40769195", "size": "185/65R14", "name": "Автошина 185/65R14 HIFLY WIN-TURI 212 86T,зима", "qty": 2}, {"id": 190, "row": 193, "pallet": "7", "code": "40769150", "size": "175/65R14", "name": "Автошина 175/65R14 82T AOSEN DW02, зима", "qty": 1}, {"id": 191, "row": 194, "pallet": "13", "code": "40763778", "size": "205/60R16", "name": "Автошина 205/60R16 MARSHAL KW31 XL 96R,зима", "qty": 4}, {"id": 192, "row": 195, "pallet": "1", "code": "40769156", "size": "215/60R16", "name": "Автошина 215/60R16 95T AOSEN HW508,зима", "qty": 7}, {"id": 193, "row": 196, "pallet": "14", "code": "40769196", "size": "185/65R15", "name": "Автошина 185/65R15 HIFLY WIN-TURI 212 88T,зима", "qty": 10}, {"id": 194, "row": 197, "pallet": "15", "code": "40769199", "size": "205/60R16", "name": "Автошина 205/60R16 HIFLY WIN-TURI 212 92H,зима", "qty": 11}, {"id": 195, "row": 198, "pallet": "16", "code": "40745623", "size": "175/70R13", "name": "Автошина 175/70R13 82T TRIANGLE TR777 , зима", "qty": 6}, {"id": 196, "row": 199, "pallet": "17", "code": "40769190", "size": "175/65R14", "name": "Автошина 175/65/R14 HIFLY WIN-TURI 212 82T,зима", "qty": 6}, {"id": 197, "row": 200, "pallet": "17", "code": "40735206", "size": "175/70R13", "name": "Автошина 175/70/R13 82T Rosava БЦ-20, всесезонка", "qty": 6}, {"id": 198, "row": 201, "pallet": "17", "code": "40745922", "size": "175/70R13", "name": "Автошина 175/70R13 82T PETLAS SNOWMASTER 2, зима", "qty": 2}, {"id": 199, "row": 202, "pallet": "22", "code": "40769205", "size": "225/50R17", "name": "Автошина 225/50/R17 HIFLY WIN-TURI 216 98H, XL,зима", "qty": 2}, {"id": 200, "row": 203, "pallet": "22", "code": "40735206", "size": "175/70R13", "name": "Автошина 175/70/R13 82T Rosava БЦ-20, всесезонка", "qty": 3}, {"id": 201, "row": 204, "pallet": "22", "code": "40763673", "size": "185/65R15", "name": "Автошина 185/65R15 92R MARSHAL KW31 XL ,зима", "qty": 4}, {"id": 202, "row": 205, "pallet": "22", "code": "40769203", "size": "215/60R17", "name": "Автошина 215/60R17 HIFLY WIN-TURI 212 96H,зима", "qty": 2}, {"id": 203, "row": 206, "pallet": "22", "code": "40769190", "size": "175/65R14", "name": "Автошина 175/65R14 HIFLY WIN-TURI 212 82T,зима", "qty": 1}, {"id": 204, "row": 207, "pallet": "25", "code": "40763713", "size": "215/65R16", "name": "Автошина 215/65R16 102T HANKOOK W636 XL,зима", "qty": 4}, {"id": 205, "row": 208, "pallet": "25", "code": "40752325", "size": "195/65R15", "name": "Автошина 195/65R15 MATADOR MP62 ALL WHETHER EVO 91H, всесезона", "qty": 2}, {"id": 206, "row": 209, "pallet": "25", "code": "40769200", "size": "205/65R15", "name": "Автошина 205/65R15 HIFLY WIN-TURI 212 94H,зима", "qty": 7}, {"id": 207, "row": 210, "pallet": "33", "code": "40769196", "size": "185/65R15", "name": "Автошина 185/65R15 HIFLY WIN-TURI 212 88T,зима", "qty": 9}, {"id": 208, "row": 211, "pallet": "31", "code": "40769199", "size": "205/60R16", "name": "Автошина 205/60R16 HIFLY WIN-TURI 212 92H,зима", "qty": 5}, {"id": 209, "row": 212, "pallet": "34", "code": "40745625", "size": "205/55R16", "name": "Автошина 205/55R16 94V TRIANGLE TR777 XL, зима", "qty": 11}, {"id": 210, "row": 213, "pallet": "вітрина вулиця", "code": "40769158", "size": "215/55R17", "name": "Автошина 215/55R17 94S AOSEN HW518+, зима", "qty": 1}, {"id": 211, "row": 214, "pallet": "24", "code": "40769158", "size": "215/55R17", "name": "Автошина 215/55R17 94S AOSEN HW518+, зима", "qty": 5}];
+    const INITIAL_HISTORY = [{"time": "2026-11-21 10:46", "user": "@soliinyk20", "code": "40769196", "action": "Встановлено точну кількість", "was": 14, "became": 10, "diff": -4, "loc": "палета 14", "name": "Автошина 185/65R15 HIFLY WIN-TURI 212 88T,зима"}, {"time": "2026-11-21 10:39", "user": "@soliinyk20", "code": "40714523", "action": "Встановлено точну кількість", "was": 4, "became": 0, "diff": -4, "loc": "палети фасад", "name": "Автошина 195/65R15 91T Premiorri ViaMaggiore, зима"}, {"time": "2026-11-20 11:29", "user": "Roman (ID: 1064852880)", "code": "40714523", "action": "Зменшено (-1)", "was": 3, "became": 2, "diff": -1, "loc": "палета 5", "name": "Автошина 195/65R15 91T Premiorri ViaMaggiore, зима"}, {"time": "2026-11-20 11:29", "user": "Roman (ID: 1064852880)", "code": "40714523", "action": "Зменшено (-1)", "was": 4, "became": 3, "diff": -1, "loc": "палета 5", "name": "Автошина 195/65R15 91T Premiorri ViaMaggiore, зима"}, {"time": "2026-11-20 03:30", "user": "@авто-очищення", "code": "40714401", "action": "Видалено рядок з 0 шт.", "was": 0, "became": 0, "diff": 0, "loc": "палета 7", "name": "Автошина 205/55R16 91T Premiorri ViaMaggiore, зима"}, {"time": "2026-11-20 03:30", "user": "@авто-очищення", "code": "40714519", "action": "Видалено рядок з 0 шт.", "was": 0, "became": 0, "diff": 0, "loc": "палети фасад", "name": "Автошина 185/60R14 82T Premiorri ViaMaggiore, зима"}, {"time": "2026-11-20 03:30", "user": "@авто-очищення", "code": "40745706", "action": "Видалено рядок з 0 шт.", "was": 0, "became": 0, "diff": 0, "loc": "палета 24", "name": "Автошина 175/65R14 86T TRIANGLE TR777 XL,зима"}, {"time": "2026-11-19 13:02", "user": "Tanya (ID: 954609785)", "code": "40745706", "action": "Зменшено (-1)", "was": 1, "became": 0, "diff": -1, "loc": "палета 24", "name": "Автошина 175/65R14 86T TRIANGLE TR777 XL,зима"}, {"time": "2026-11-19 13:02", "user": "Tanya (ID: 954609785)", "code": "40745706", "action": "Зменшено (-1)", "was": 2, "became": 1, "diff": -1, "loc": "палета 24", "name": "Автошина 175/65R14 86T TRIANGLE TR777 XL,зима"}, {"time": "2026-11-19 13:02", "user": "Tanya (ID: 954609785)", "code": "40745706", "action": "Зменшено (-1)", "was": 3, "became": 2, "diff": -1, "loc": "палета 24", "name": "Автошина 175/65R14 86T TRIANGLE TR777 XL,зима"}, {"time": "2026-11-19 13:02", "user": "Tanya (ID: 954609785)", "code": "40745706", "action": "Зменшено (-1)", "was": 4, "became": 3, "diff": -1, "loc": "палета 24", "name": "Автошина 175/65R14 86T TRIANGLE TR777 XL,зима"}, {"time": "2026-11-19 10:09", "user": "Tanya (ID: 954609785)", "code": "40714401", "action": "Зменшено (-1)", "was": 1, "became": 0, "diff": -1, "loc": "палета 7", "name": "Автошина 205/55R16 91T Premiorri ViaMaggiore, зима"}, {"time": "2026-11-19 10:09", "user": "Tanya (ID: 954609785)", "code": "40714401", "action": "Зменшено (-1)", "was": 2, "became": 1, "diff": -1, "loc": "палета 7", "name": "Автошина 205/55R16 91T Premiorri ViaMaggiore, зима"}, {"time": "2026-11-19 08:11", "user": "Roman (ID: 1064852880)", "code": "40714519", "action": "Зменшено (-1)", "was": 1, "became": 0, "diff": -1, "loc": "палети фасад", "name": "Автошина 185/60R14 82T Premiorri ViaMaggiore, зима"}, {"time": "2026-11-19 08:11", "user": "Roman (ID: 1064852880)", "code": "40714519", "action": "Зменшено (-1)", "was": 2, "became": 1, "diff": -1, "loc": "палети фасад", "name": "Автошина 185/60R14 82T Premiorri ViaMaggiore, зима"}, {"time": "2026-11-19 08:11", "user": "Roman (ID: 1064852880)", "code": "40714519", "action": "Зменшено (-1)", "was": 3, "became": 2, "diff": -1, "loc": "палети фасад", "name": "Автошина 185/60R14 82T Premiorri ViaMaggiore, зима"}, {"time": "2026-11-19 08:11", "user": "Roman (ID: 1064852880)", "code": "40714519", "action": "Зменшено (-1)", "was": 4, "became": 3, "diff": -1, "loc": "палети фасад", "name": "Автошина 185/60R14 82T Premiorri ViaMaggiore, зима"}, {"time": "2026-11-19 03:30", "user": "@авто-очищення", "code": "40769158", "action": "Видалено рядок з 0 шт.", "was": 0, "became": 0, "diff": 0, "loc": "палета 29", "name": "Автошина 215/55R17 94S AOSEN HW518+, зима"}, {"time": "2026-11-19 03:30", "user": "@авто-очищення", "code": "40769158", "action": "Видалено рядок з 0 шт.", "was": 0, "became": 0, "diff": 0, "loc": "вітрина зал", "name": "Автошина 215/55R17 94S AOSEN HW518+, зима"}, {"time": "2026-11-18 14:49", "user": "Tanya (ID: 954609785)", "code": "40769154", "action": "Додано (+1)", "was": 14, "became": 15, "diff": 1, "loc": "палета 2", "name": "Автошина 205/55R16 91T AOSEN HW518+, зима"}, {"time": "2026-11-18 14:48", "user": "Tanya (ID: 954609785)", "code": "40769154", "action": "Додано (+1)", "was": 13, "became": 14, "diff": 1, "loc": "палета 2", "name": "Автошина 205/55R16 91T AOSEN HW518+, зима"}, {"time": "2026-11-18 14:48", "user": "Tanya (ID: 954609785)", "code": "40769154", "action": "Додано (+1)", "was": 12, "became": 13, "diff": 1, "loc": "палета 2", "name": "Автошина 205/55R16 91T AOSEN HW518+, зима"}, {"time": "2026-11-18 14:48", "user": "Tanya (ID: 954609785)", "code": "40769154", "action": "Додано (+1)", "was": 11, "became": 12, "diff": 1, "loc": "палета 2", "name": "Автошина 205/55R16 91T AOSEN HW518+, зима"}, {"time": "2026-11-18 14:48", "user": "Tanya (ID: 954609785)", "code": "40769158", "action": "Додано (+1)", "was": 4, "became": 5, "diff": 1, "loc": "палета 24", "name": "Автошина 215/55R17 94S AOSEN HW518+, зима"}, {"time": "2026-11-18 14:48", "user": "Tanya (ID: 954609785)", "code": "40769158", "action": "Додано (+1)", "was": 3, "became": 4, "diff": 1, "loc": "палета 24", "name": "Автошина 215/55R17 94S AOSEN HW518+, зима"}, {"time": "2026-11-18 14:48", "user": "Tanya (ID: 954609785)", "code": "40769158", "action": "Додано (+1)", "was": 2, "became": 3, "diff": 1, "loc": "палета 24", "name": "Автошина 215/55R17 94S AOSEN HW518+, зима"}, {"time": "2026-11-18 14:48", "user": "Tanya (ID: 954609785)", "code": "40769158", "action": "Додано (+1)", "was": 1, "became": 2, "diff": 1, "loc": "палета 24", "name": "Автошина 215/55R17 94S AOSEN HW518+, зима"}, {"time": "2026-11-18 14:48", "user": "Tanya (ID: 954609785)", "code": "40769158", "action": "Переміщення (+)", "was": 0, "became": 1, "diff": 1, "loc": "палета 24", "name": "Автошина 215/55R17 94S AOSEN HW518+, зима"}, {"time": "2026-11-18 14:47", "user": "Tanya (ID: 954609785)", "code": "40769158", "action": "Переміщення (−)", "was": 1, "became": 0, "diff": -1, "loc": "палета 29", "name": "Автошина 215/55R17 94S AOSEN HW518+, зима"}, {"time": "2026-11-18 14:47", "user": "Tanya (ID: 954609785)", "code": "40769158", "action": "Скасовано зміну", "was": 0, "became": 1, "diff": 1, "loc": "палета 29", "name": "Автошина 215/55R17 94S AOSEN HW518+, зима"}, {"time": "2026-11-18 14:46", "user": "Tanya (ID: 954609785)", "code": "40769158", "action": "Зменшено (-1)", "was": 1, "became": 0, "diff": -1, "loc": "палета 29", "name": "Автошина 215/55R17 94S AOSEN HW518+, зима"}, {"time": "2026-11-18 14:46", "user": "Tanya (ID: 954609785)", "code": "40769158", "action": "Скасовано зміну", "was": 0, "became": 1, "diff": 1, "loc": "палета 29", "name": "Автошина 215/55R17 94S AOSEN HW518+, зима"}, {"time": "2026-11-18 14:46", "user": "Tanya (ID: 954609785)", "code": "40769158", "action": "Переміщення (+)", "was": 0, "became": 1, "diff": 1, "loc": "вітрина вулиця", "name": "Автошина 215/55R17 94S AOSEN HW518+, зима"}, {"time": "2026-11-18 14:46", "user": "Tanya (ID: 954609785)", "code": "40769158", "action": "Переміщення (−)", "was": 1, "became": 0, "diff": -1, "loc": "вітрина зал", "name": "Автошина 215/55R17 94S AOSEN HW518+, зима"}, {"time": "2026-11-18 14:45", "user": "Tanya (ID: 954609785)", "code": "40769158", "action": "Зменшено (-1)", "was": 1, "became": 0, "diff": -1, "loc": "палета 29", "name": "Автошина 215/55R17 94S AOSEN HW518+, зима"}, {"time": "2026-11-17 09:16", "user": "Roman (ID: 1064852880)", "code": "40763622", "action": "Зменшено (-1)", "was": 9, "became": 8, "diff": -1, "loc": "палета 5", "name": "Автошина 205/65R15 94H POWERTRAC SNOWTOUR PRO,зима"}, {"time": "2026-11-17 09:16", "user": "Roman (ID: 1064852880)", "code": "40763622", "action": "Зменшено (-1)", "was": 10, "became": 9, "diff": -1, "loc": "палета 5", "name": "Автошина 205/65R15 94H POWERTRAC SNOWTOUR PRO,зима"}, {"time": "2026-11-17 09:16", "user": "Roman (ID: 1064852880)", "code": "40763622", "action": "Зменшено (-1)", "was": 11, "became": 10, "diff": -1, "loc": "палета 5", "name": "Автошина 205/65R15 94H POWERTRAC SNOWTOUR PRO,зима"}, {"time": "2026-11-17 09:16", "user": "Roman (ID: 1064852880)", "code": "40763622", "action": "Зменшено (-1)", "was": 12, "became": 11, "diff": -1, "loc": "палета 5", "name": "Автошина 205/65R15 94H POWERTRAC SNOWTOUR PRO,зима"}, {"time": "2026-11-16 13:32", "user": "@soliinyk20", "code": "40745335", "action": "Видалено рядок з 0 шт.", "was": 0, "became": 0, "diff": 0, "loc": "палета 4", "name": "Автошина 205/55R16 91H PREMIORRI VIAMAGGIORI Z PLUS,зима"}, {"time": "2026-11-16 08:16", "user": "@soliinyk20", "code": "40745625", "action": "Переміщення (+)", "was": 0, "became": 11, "diff": 11, "loc": "палета 34", "name": "Автошина 205/55R16 94V TRIANGLE TR777 XL, зима"}, {"time": "2026-11-16 08:16", "user": "@soliinyk20", "code": "40745625", "action": "Переміщення (−)", "was": 11, "became": 0, "diff": -11, "loc": "палета 35", "name": "Автошина 205/55R16 94V TRIANGLE TR777 XL, зима"}, {"time": "2026-11-16 08:16", "user": "@soliinyk20", "code": "40745625", "action": "Переміщення (+)", "was": 0, "became": 11, "diff": 11, "loc": "палета 35", "name": "Автошина 205/55R16 94V TRIANGLE TR777 XL, зима"}, {"time": "2026-11-16 08:16", "user": "@soliinyk20", "code": "40745625", "action": "Переміщення (−)", "was": 11, "became": 0, "diff": -11, "loc": "палета 34", "name": "Автошина 205/55R16 94V TRIANGLE TR777 XL, зима"}, {"time": "2026-11-16 08:12", "user": "Roman (ID: 1064852880)", "code": "40745335", "action": "Зменшено (-1)", "was": 1, "became": 0, "diff": -1, "loc": "палета 4", "name": "Автошина 205/55R16 91H PREMIORRI VIAMAGGIORI Z PLUS,зима"}, {"time": "2026-11-16 08:12", "user": "Roman (ID: 1064852880)", "code": "40745335", "action": "Зменшено (-1)", "was": 2, "became": 1, "diff": -1, "loc": "палета 4", "name": "Автошина 205/55R16 91H PREMIORRI VIAMAGGIORI Z PLUS,зима"}, {"time": "2026-11-16 07:47", "user": "@soliinyk20", "code": "40769190", "action": "Видалено рядок з 0 шт.", "was": 0, "became": 0, "diff": 0, "loc": "палета 39", "name": "Автошина 175/65R14 HIFLY WIN-TURI 212 82T,зима"}, {"time": "2026-11-16 07:47", "user": "@soliinyk20", "code": "40763673", "action": "Видалено рядок з 0 шт.", "was": 0, "became": 0, "diff": 0, "loc": "палета 39", "name": "Автошина 185/65R15 92R MARSHAL KW31 XL ,зима"}, {"time": "2026-11-16 07:47", "user": "@soliinyk20", "code": "40745922", "action": "Видалено рядок з 0 шт.", "was": 0, "became": 0, "diff": 0, "loc": "палета 40", "name": "Автошина 175/70R13 82T PETLAS SNOWMASTER 2, зима"}, {"time": "2026-11-16 07:47", "user": "@soliinyk20", "code": "40769203", "action": "Видалено рядок з 0 шт.", "was": 0, "became": 0, "diff": 0, "loc": "палета 39", "name": "Автошина 215/60R17 HIFLY WIN-TURI 212 96H,зима"}, {"time": "2026-11-16 07:47", "user": "@soliinyk20", "code": "40769191", "action": "Видалено рядок з 0 шт.", "was": 0, "became": 0, "diff": 0, "loc": "палета 2", "name": "Автошина 175/70R13 HIFLY WIN-TURI 212 82T,зима"}, {"time": "2026-11-15 15:16", "user": "@soliinyk20", "code": "40745625", "action": "Переміщення (+)", "was": 0, "became": 11, "diff": 11, "loc": "палета 34", "name": ""}, {"time": "2026-11-15 15:16", "user": "@soliinyk20", "code": "40745625", "action": "Переміщення (−)", "was": 11, "became": 0, "diff": -11, "loc": "палета 35", "name": ""}, {"time": "2026-11-15 15:15", "user": "@soliinyk20", "code": "40769199", "action": "Переміщення (+)", "was": 0, "became": 5, "diff": 5, "loc": "палета 31", "name": ""}, {"time": "2026-11-15 15:15", "user": "@soliinyk20", "code": "40769199", "action": "Переміщення (−)", "was": 5, "became": 0, "diff": -5, "loc": "палета 34", "name": ""}, {"time": "2026-11-15 15:13", "user": "@soliinyk20", "code": "40769196", "action": "Переміщення (+)", "was": 0, "became": 9, "diff": 9, "loc": "палета 33", "name": ""}, {"time": "2026-11-15 15:12", "user": "@soliinyk20", "code": "40769196", "action": "Переміщення (−)", "was": 9, "became": 0, "diff": -9, "loc": "палета 36", "name": ""}, {"time": "2026-11-15 15:10", "user": "@soliinyk20", "code": "40769200", "action": "Переміщення (+)", "was": 0, "became": 7, "diff": 7, "loc": "палета 25", "name": ""}, {"time": "2026-11-15 15:10", "user": "@soliinyk20", "code": "40769200", "action": "Переміщення (−)", "was": 7, "became": 0, "diff": -7, "loc": "палета 37", "name": ""}, {"time": "2026-11-15 15:10", "user": "@soliinyk20", "code": "40752325", "action": "Переміщення (+)", "was": 0, "became": 2, "diff": 2, "loc": "палета 25", "name": ""}, {"time": "2026-11-15 15:10", "user": "@soliinyk20", "code": "40752325", "action": "Переміщення (−)", "was": 2, "became": 0, "diff": -2, "loc": "палета 37", "name": ""}, {"time": "2026-11-15 15:09", "user": "@soliinyk20", "code": "40763713", "action": "Переміщення (+)", "was": 0, "became": 4, "diff": 4, "loc": "палета 25", "name": ""}, {"time": "2026-11-15 15:09", "user": "@soliinyk20", "code": "40763713", "action": "Переміщення (−)", "was": 4, "became": 0, "diff": -4, "loc": "палета 37", "name": ""}, {"time": "2026-11-15 15:07", "user": "@soliinyk20", "code": "40769190", "action": "Переміщення (+)", "was": 0, "became": 1, "diff": 1, "loc": "палета 22", "name": ""}, {"time": "2026-11-15 15:07", "user": "@soliinyk20", "code": "40769190", "action": "Переміщення (−)", "was": 1, "became": 0, "diff": -1, "loc": "палета 39", "name": ""}, {"time": "2026-11-15 15:07", "user": "@soliinyk20", "code": "40769203", "action": "Переміщення (+)", "was": 0, "became": 2, "diff": 2, "loc": "палета 22", "name": ""}, {"time": "2026-11-15 15:07", "user": "@soliinyk20", "code": "40769203", "action": "Переміщення (−)", "was": 2, "became": 0, "diff": -2, "loc": "палета 39", "name": ""}, {"time": "2026-11-15 15:07", "user": "@soliinyk20", "code": "40763673", "action": "Переміщення (+)", "was": 0, "became": 4, "diff": 4, "loc": "палета 22", "name": ""}, {"time": "2026-11-15 15:07", "user": "@soliinyk20", "code": "40763673", "action": "Переміщення (−)", "was": 4, "became": 0, "diff": -4, "loc": "палета 39", "name": ""}, {"time": "2026-11-15 15:06", "user": "@soliinyk20", "code": "40735206", "action": "Переміщення (+)", "was": 0, "became": 3, "diff": 3, "loc": "палета 22", "name": ""}, {"time": "2026-11-15 15:06", "user": "@soliinyk20", "code": "40735206", "action": "Переміщення (−)", "was": 3, "became": 0, "diff": -3, "loc": "палета 39", "name": ""}, {"time": "2026-11-15 15:06", "user": "@soliinyk20", "code": "40769205", "action": "Переміщення (+)", "was": 0, "became": 2, "diff": 2, "loc": "палета 22", "name": ""}, {"time": "2026-11-15 15:06", "user": "@soliinyk20", "code": "40769205", "action": "Переміщення (−)", "was": 2, "became": 0, "diff": -2, "loc": "палета 39", "name": ""}, {"time": "2026-11-15 15:04", "user": "@soliinyk20", "code": "40769190", "action": "Переміщення (+)", "was": 0, "became": 1, "diff": 1, "loc": "палета 39", "name": ""}, {"time": "2026-11-15 15:04", "user": "@soliinyk20", "code": "40769190", "action": "Переміщення (−)", "was": 1, "became": 0, "diff": -1, "loc": "палета 38", "name": ""}, {"time": "2026-11-15 15:02", "user": "@soliinyk20", "code": "40763673", "action": "Переміщення (+)", "was": 0, "became": 4, "diff": 4, "loc": "палета 39", "name": ""}, {"time": "2026-11-15 15:02", "user": "@soliinyk20", "code": "40763673", "action": "Переміщення (−)", "was": 4, "became": 0, "diff": -4, "loc": "палета 38", "name": ""}, {"time": "2026-11-15 15:00", "user": "@soliinyk20", "code": "40745922", "action": "Переміщення (+)", "was": 0, "became": 2, "diff": 2, "loc": "палета 17", "name": ""}, {"time": "2026-11-15 15:00", "user": "@soliinyk20", "code": "40745922", "action": "Переміщення (−)", "was": 2, "became": 0, "diff": -2, "loc": "палета 40", "name": ""}, {"time": "2026-11-15 14:59", "user": "@soliinyk20", "code": "40735206", "action": "Переміщення (+)", "was": 0, "became": 6, "diff": 6, "loc": "палета 17", "name": ""}, {"time": "2026-11-15 14:59", "user": "@soliinyk20", "code": "40735206", "action": "Переміщення (−)", "was": 6, "became": 0, "diff": -6, "loc": "палета 40", "name": ""}, {"time": "2026-11-15 14:59", "user": "@soliinyk20", "code": "40769190", "action": "Переміщення (+)", "was": 0, "became": 6, "diff": 6, "loc": "палета 17", "name": ""}, {"time": "2026-11-15 14:59", "user": "@soliinyk20", "code": "40769190", "action": "Переміщення (−)", "was": 6, "became": 0, "diff": -6, "loc": "палета 40", "name": ""}, {"time": "2026-11-15 14:54", "user": "@soliinyk20", "code": "40745623", "action": "Переміщення (+)", "was": 0, "became": 6, "diff": 6, "loc": "палета 16", "name": ""}, {"time": "2026-11-15 14:54", "user": "@soliinyk20", "code": "40745623", "action": "Переміщення (−)", "was": 6, "became": 0, "diff": -6, "loc": "палета 17", "name": ""}, {"time": "2026-11-15 14:53", "user": "@soliinyk20", "code": "40769199", "action": "Переміщення (+)", "was": 0, "became": 11, "diff": 11, "loc": "палета 15", "name": ""}, {"time": "2026-11-15 14:52", "user": "@soliinyk20", "code": "40769199", "action": "Переміщення (−)", "was": 11, "became": 0, "diff": -11, "loc": "палета 42", "name": ""}, {"time": "2026-11-15 14:49", "user": "@soliinyk20", "code": "40769196", "action": "Переміщення (+)", "was": 0, "became": 14, "diff": 14, "loc": "палета 14", "name": ""}, {"time": "2026-11-15 14:49", "user": "@soliinyk20", "code": "40769196", "action": "Переміщення (−)", "was": 14, "became": 0, "diff": -14, "loc": "палета 43", "name": ""}, {"time": "2026-11-15 14:46", "user": "@soliinyk20", "code": "40769156", "action": "Переміщення (+)", "was": 0, "became": 7, "diff": 7, "loc": "палета 1", "name": ""}, {"time": "2026-11-15 14:46", "user": "@soliinyk20", "code": "40769156", "action": "Переміщення (−)", "was": 7, "became": 0, "diff": -7, "loc": "палета 44", "name": ""}, {"time": "2026-11-15 14:42", "user": "@soliinyk20", "code": "40745623", "action": "Переміщення (+)", "was": 16, "became": 18, "diff": 2, "loc": "палета 23", "name": ""}, {"time": "2026-11-15 14:42", "user": "@soliinyk20", "code": "40745623", "action": "Переміщення (−)", "was": 3, "became": 1, "diff": -2, "loc": "палета 27", "name": ""}, {"time": "2026-11-15 14:40", "user": "@soliinyk20", "code": "—", "action": "Оптимізація складу", "was": 20, "became": 5, "diff": -15, "loc": "палети 1–44", "name": ""}, {"time": "2026-11-15 14:40", "user": "@soliinyk20", "code": "40745922", "action": "Переміщення (+)", "was": 0, "became": 2, "diff": 2, "loc": "палета 40", "name": ""}, {"time": "2026-11-15 14:40", "user": "@soliinyk20", "code": "40769203", "action": "Переміщення (+)", "was": 0, "became": 2, "diff": 2, "loc": "палета 39", "name": ""}, {"time": "2026-11-15 14:40", "user": "@soliinyk20", "code": "40769158", "action": "Переміщення (+)", "was": 0, "became": 1, "diff": 1, "loc": "палета 29", "name": ""}, {"time": "2026-11-15 14:40", "user": "@soliinyk20", "code": "40763778", "action": "Переміщення (+)", "was": 0, "became": 4, "diff": 4, "loc": "палета 13", "name": ""}, {"time": "2026-11-15 14:40", "user": "@soliinyk20", "code": "40769150", "action": "Переміщення (+)", "was": 0, "became": 1, "diff": 1, "loc": "палета 7", "name": ""}, {"time": "2026-11-15 14:40", "user": "@soliinyk20", "code": "40714401", "action": "Переміщення (+)", "was": 0, "became": 2, "diff": 2, "loc": "палета 7", "name": ""}];
+    const INITIAL_SKLAD = [{"code": "40745186", "name": "Автошина 155/70R13 75T ROSAVA WQ-101,зима", "qty": 1}, {"code": "40714527", "name": "Автошина 215/65R16 98T Premiorri ViaMaggiore, зима", "qty": 1}, {"code": "40745318", "name": "Автошина 175/70R13 ESTRADA SAMURAI 82T,зима", "qty": 0}, {"code": "40745796", "name": "Автошина 185/60R15 PETLAS W661 88T,зима", "qty": 0}, {"code": "40745800", "name": "Автошина 215/55R16 PETLAS W661 97T XL,зима", "qty": 4}, {"code": "40745801", "name": "Автошина 215/55R17 PETLAS W661 98T,зима", "qty": 4}, {"code": "40745803", "name": "Автошина 225/50/R17 98T W661 PETLAS,зима", "qty": 4}, {"code": "40745813", "name": "Автошина 185/65R15 88T PETLAS W661, зима", "qty": 0}, {"code": "40745816", "name": "Автошина 205/65R15 94T PETLAS W661,зима", "qty": 4}, {"code": "40745908", "name": "Автошина 185/65R15 92T HANKOOK XL IZ2 W462,зима", "qty": 2}, {"code": "40763596", "name": "Автошина 205/65R16H 95H HANKOOK W462, зима", "qty": 12}, {"code": "40745925", "name": "Автошина 185/60R14 82T POWERTRAC SNOWTOUR PRO, зима", "qty": 2}, {"code": "40763645", "name": "Автошина 165/70R14 81T POWERTRAC SNOWTOUR PRO XL 85T, зима", "qty": 4}, {"code": "40752941", "name": "Автошина 215/65R16 TRIANGLE TA01 XL 102H , в/с", "qty": 0}, {"code": "40763673", "name": "Автошина 185/65R15 92R MARSHAL KW31 XL ,зима", "qty": 1}, {"code": "40745754", "name": "Автошина 205/55R16 91T PETLAS W661,зима", "qty": 2}, {"code": "40763713", "name": "Автошина 215/65R16 102T HANKOOK W636 XL,зима", "qty": 1}, {"code": "40763672", "name": "Автошина 185/60R15 XL 88H TRIANGLE TW401 , зима", "qty": 3}, {"code": "40735206", "name": "Автошина 175/70R13 82T Rosava БЦ-20, всесезонка", "qty": 15}, {"code": "40752325", "name": "Автошина 195/65R15 MATADOR MP62 ALL WHETHER EVO 91H, всесезона", "qty": 4}, {"code": "40763807", "name": "Автошина 175/65R14 86H PREMIORRI Vimero 4Seasons, в.с", "qty": 1}, {"code": "40769020", "name": "Автошина 205/55R16 PREMIORRI Vimero 4Seasons 94V XL, літо", "qty": 10}, {"code": "40714401", "name": "Автошина 205/55R16 91T Premiorri ViaMaggiore, зима", "qty": 6}, {"code": "40714519", "name": "Автошина 185/60R14 82T Premiorri ViaMaggiore, зима", "qty": 8}, {"code": "40714523", "name": "Автошина 195/65R15 91T Premiorri ViaMaggiore, зима", "qty": 10}, {"code": "40714805", "name": "Автошина 185/65R14 86T TRIANGLE TR777", "qty": 10}, {"code": "40745183", "name": "Автошина 205/60R16 96R TRIANGLE PL01", "qty": 10}, {"code": "40745318", "name": "Автошина 175/70R13 ESTRADA SAMURAI 82T,зима", "qty": 1}, {"code": "40745335", "name": "Автошина 205/55R16 91H PREMIORRI VIAMAGGIORI Z PLUS,зима", "qty": 2}, {"code": "40745375", "name": "Автошина 185/65R14 Estrada Samurai 86T , зима", "qty": 8}, {"code": "40745623", "name": "Автошина 175/70R13 82T TRIANGLE TR777 , зима", "qty": 42}, {"code": "40745625", "name": "Автошина 205/55R16 94V TRIANGLE TR777 XL, зима", "qty": 12}, {"code": "40745633", "name": "Автошина 185/65R15 88H PREMIORRI VIAMAGGIORE Z PLUS,зима", "qty": 3}, {"code": "40745640", "name": "Автошина 205/60/R16 92H PREMIORRI VIAMAGGIORE Z PLUS,зима", "qty": 10}, {"code": "40745645", "name": "Автошина 175/70R14 88T ESTRADA Winterri,зима", "qty": 1}, {"code": "40745706", "name": "Автошина 175/65R14 86T TRIANGLE TR777 XL,зима", "qty": 6}, {"code": "40745751", "name": "Автошина 195/65R15 91T PETLAS W661, зима", "qty": 6}, {"code": "40745757", "name": "Автошина 175/70R13 82T PETLAS W661 , зима", "qty": 2}, {"code": "40745801", "name": "Автошина 215/55R17 PETLAS W661 98T,зима", "qty": 4}, {"code": "40745813", "name": "Автошина 185/65R15 88T PETLAS W661, зима", "qty": -8}, {"code": "40745817", "name": "Автошина 215/55R16 97H PREMIORRI VIAMAGGIORE Z Plus, зима", "qty": 1}, {"code": "40745903", "name": "Автошина 175/65R14 86T HANKOOK W462 XL,зима", "qty": 10}, {"code": "40745904", "name": "Автошина 175/70R14 88T TRIANGLE TR777 XL,зима", "qty": 2}, {"code": "40745905", "name": "Автошина 185/60R14 82T TRIANGLE TR777,зима", "qty": 14}, {"code": "40745922", "name": "Автошина 175/70R13 82T PETLAS SNOWMASTER 2, зима", "qty": 8}, {"code": "40745926", "name": "Автошина 185/60R14 82H PETLAS SNOWMASTER 2,зима", "qty": 4}, {"code": "40745928", "name": "Автошина 185/65R14 86T PETLAS SNOWMASTER 2,зима", "qty": 2}, {"code": "40763565", "name": "Автошина 175/65R14 82T PETLAS W661,зима", "qty": 4}, {"code": "40763622", "name": "Автошина 205/65R15 94H POWERTRAC SNOWTOUR PRO,зима", "qty": 36}, {"code": "40763628", "name": "Автошина 185/65R14 86T POWERTRAC SNOWTOUR PRO,зима", "qty": 2}, {"code": "40763629", "name": "Автошина 185/70R14 88T TRIANGLE TW401,зима", "qty": 2}, {"code": "40763643", "name": "Автошина 195/65R15 MARSHAL KW31 91R, зима", "qty": 10}, {"code": "40763668", "name": "Автошина 175/65R14 82T PETLAS SNOWMASTER 2,зима", "qty": 4}, {"code": "40763671", "name": "Автошина 185/60R15 XL 88H POWERTRAC SNOWTOUR PRO, зима", "qty": 2}, {"code": "40763673", "name": "Автошина 185/65R15 92R MARSHAL KW31 XL ,зима", "qty": 4}, {"code": "40763675", "name": "Автошина 205/55R16 91R MARSHAL KW31 ,зима", "qty": 14}, {"code": "40763699", "name": "Автошина 205/55R16 94H HANKOOK W636 XL,зима", "qty": 8}, {"code": "40763713", "name": "Автошина 215/65R16 102T HANKOOK W636 XL,зима", "qty": 4}, {"code": "40763742", "name": "Автошина 215/55R17 98V PETLAS SNOWMASTER 2 SPORT XL,зима", "qty": 4}, {"code": "40763764", "name": "Автошина 195/65R15 91T Horizon HW508, зима", "qty": 1}, {"code": "40763767", "name": "Автошина 215/60R16 95T Horizon HW508, зима", "qty": 1}, {"code": "40763768", "name": "Автошина 205/55R16 91T Horizon HW508, зима", "qty": 1}, {"code": "40763772", "name": "Автошина 225/50R17 94H Horizon HW508, зима", "qty": 2}, {"code": "40763777", "name": "Автошина 195/65R15 TRIANGLE TR777 91T,зима", "qty": 10}, {"code": "40763778", "name": "Автошина 205/60R16 MARSHAL KW31 XL 96R,зима", "qty": 4}, {"code": "40763779", "name": "Автошина 205/65R15 MARSHAL KW31 99R,зима", "qty": 8}, {"code": "40763802", "name": "Автошина 215/65R16 102H TRIANGLE TW401 XL,зима", "qty": 32}, {"code": "40763827", "name": "Автошина 185/65R15 TRIANGLE TR777 92T, XLзима", "qty": 4}, {"code": "40769150", "name": "Автошина 175/65R14 82T AOSEN DW02, зима", "qty": 6}, {"code": "40769153", "name": "Автошина 195/65R15 91T AOSEN HW518+, зима", "qty": 16}, {"code": "40769154", "name": "Автошина 205/55R16 91T AOSEN HW518+, зима", "qty": 12}, {"code": "40769155", "name": "Автошина 215/55R16 93T AOSEN HW518, зима", "qty": 8}, {"code": "40769156", "name": "Автошина 215/60R16 95T AOSEN HW518, зима", "qty": 8}, {"code": "40769158", "name": "Автошина 215/55R17 94S AOSEN HW518+, зима", "qty": 2}, {"code": "40769159", "name": "Автошина 225/50R17 94T AOSEN HW518, зима", "qty": 8}, {"code": "40769160", "name": "Автошина 205/60R16 92T AOSEN HW518+, зима", "qty": 4}, {"code": "40769190", "name": "Автошина 175/65R14 HIFLY WIN-TURI 212 82T,зима", "qty": 12}, {"code": "40769191", "name": "Автошина 175/70R13 HIFLY WIN-TURI 212 82T,зима", "qty": 8}, {"code": "40769193", "name": "Автошина 185/60R14 HIFLY WIN-TURI 212 82T,зима", "qty": 4}, {"code": "40769195", "name": "Автошина 185/65R14 HIFLY WIN-TURI 212 86T,зима", "qty": 4}, {"code": "40769196", "name": "Автошина 185/65R15 HIFLY WIN-TURI 212 88T,зима", "qty": 28}, {"code": "40769198", "name": "Автошина 205/55R16 HIFLY WIN-TURI 212 91H,зима", "qty": 2}, {"code": "40769199", "name": "Автошина 205/60R16 HIFLY WIN-TURI 212 92H,зима", "qty": 22}, {"code": "40769200", "name": "Автошина 205/65R15 HIFLY WIN-TURI 212 94H,зима", "qty": 8}, {"code": "40769203", "name": "Автошина 215/60R17 HIFLY WIN-TURI 212 96H,зима", "qty": 4}, {"code": "40769204", "name": "Автошина 215/65R16 HIFLY WIN-TURI 212 98H,зима", "qty": 6}, {"code": "40769205", "name": "Автошина 225/50R17 HIFLY WIN-TURI 216 98H, XL,зима", "qty": 4}];
+    const PHOTO_THUMBS = {"aosen": {"filename": "AOSEN.jpeg", "dataUri": ""}, "estrada sa": {"filename": "ESTRADA Sa.jpg", "dataUri": ""}, "estrada win": {"filename": "ESTRADA Win.jpg", "dataUri": ""}, "hw508": {"filename": "HW508.jpeg", "dataUri": ""}, "hifly": {"filename": "Hifly.jpeg", "dataUri": ""}, "marshal": {"filename": "Marshal.jpeg", "dataUri": ""}, "matador": {"filename": "Matador.jpeg", "dataUri": ""}, "powertrac": {"filename": "Powertrac.jpeg", "dataUri": ""}, "rosava бц": {"filename": "Rosava БЦ.jpg", "dataUri": ""}, "snowgard": {"filename": "Snowgard.jpeg", "dataUri": ""}, "snowmaster 2": {"filename": "Snowmaster 2.jpeg", "dataUri": ""}, "triangle": {"filename": "Triangle.jpeg", "dataUri": ""}, "viamaggiore z plus": {"filename": "ViaMaggiore Z Plus.jpeg", "dataUri": ""}, "viamaggiore": {"filename": "ViaMaggiore.jpeg", "dataUri": ""}, "vimero 4seasons": {"filename": "Vimero 4Seasons.jpeg", "dataUri": ""}, "w462": {"filename": "W462.jpeg", "dataUri": ""}, "w636": {"filename": "W636.jpeg", "dataUri": ""}, "w661": {"filename": "W661.jpeg", "dataUri": ""}};
+    const PALLET_MAX = 16;
+    const SPECIAL_LOCS = ["вітрина зал", "вітрина вулиця", "палети фасад"];
+    const BRAND_ALIASES = {
+      "петлас": "petlas", "хенкук": "hankook", "ханкук": "hankook", "хенкок": "hankook",
+      "тріангл": "triangle", "трайангл": "triangle", "триангл": "triangle",
+      "маршал": "marshal", "росава": "rosava", "аосен": "aosen", "хайфлай": "hifly", "хіфлай": "hifly",
+      "преміорі": "premiorri", "премиорри": "premiorri", "премьорі": "premiorri", "естрада": "estrada",
+      "горизонт": "horizon", "хорайзон": "horizon", "павертрак": "powertrac", "пауертрак": "powertrac",
+      "матадор": "matador", "мішлен": "michelin", "бріджстоун": "bridgestone", "нокіан": "nokian"
+    };
+
+    const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
+    const isInTelegram = Boolean(tg && tg.initData);
+    const hasBackendApi = true;
+
+    const state = {
+      tires: [],
+      history: [],
+      sklad: [],
+      undoStack: [],
+      optSnapshot: null,
+      optMode: "min",
+      activeTab: "catalog",
+      activeStat: "full",
+      search: "",
+      season: "all",
+      rim: "all",
+      loc: "all",
+      dark: false,
+      nextId: INITIAL_TIRES.length + 1,
+      moveTargetId: null
+    };
+
+    function saveLocal() {
+      if (hasBackendApi) return;
+      try {
+        localStorage.setItem("tire_bot_full_v4", JSON.stringify({
+          tires: state.tires, history: state.history.slice(0, 100), nextId: state.nextId
+        }));
+      } catch (e) {}
+    }
+
+    function loadLocal() {
+      try {
+        const raw = localStorage.getItem("tire_bot_full_v4");
+        if (raw) {
+          const p = JSON.parse(raw);
+          if (Array.isArray(p.tires) && p.tires.length) {
+            state.tires = p.tires;
+            state.history = p.history || INITIAL_HISTORY.map(h => ({ ...h }));
+            state.sklad = INITIAL_SKLAD.map(s => ({ ...s }));
+            state.nextId = p.nextId || (state.tires.length + 1);
+            return;
+          }
+        }
+      } catch (e) {}
+      state.tires = INITIAL_TIRES.map(t => ({ ...t }));
+      state.history = INITIAL_HISTORY.map(h => ({ ...h }));
+      state.sklad = INITIAL_SKLAD.map(s => ({ ...s }));
+    }
+
+    async function apiCall(path, method = "GET", body = null) {
+      const headers = { "Content-Type": "application/json" };
+      if (tg && tg.initData) headers["X-Telegram-Init-Data"] = tg.initData;
+      const res = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : null });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    }
+
+    async function syncFromBackend() {
+      if (!hasBackendApi) return;
+      try {
+        const data = await apiCall("/api/tires");
+        if (Array.isArray(data.items)) {
+          state.tires = data.items;
+          if (Array.isArray(data.history)) state.history = data.history;
+          if (Array.isArray(data.sklad)) state.sklad = data.sklad;
+          document.getElementById("modeBadge").textContent = "Live Sheets";
+          document.getElementById("userSubtitle").textContent = `Google Sheets • ${state.tires.length} позицій`;
+          renderAll();
+        }
+      } catch (e) {
+        showToast("Офлайн-режим (резервні дані)");
+      }
+    }
+
+    function getTirePhotoSrc(name) {
+      const low = String(name || "").toLowerCase();
+      for (const [kw, info] of Object.entries(PHOTO_THUMBS)) {
+        if (kw.length >= 3 && low.includes(kw)) {
+          return hasBackendApi ? `/photo/${encodeURIComponent(info.filename)}` : info.dataUri;
+        }
+      }
+      return null;
+    }
+
+    function detectSeason(name) {
+      const low = String(name || "").toLowerCase();
+      if (low.includes("зима")) return "зима";
+      if (low.includes("літо")) return "літо";
+      if (low.includes("4seasons") || low.includes("в.с") || low.includes("всесезон")) return "всесезон";
+      return "інше";
+    }
+
+    function detectRim(item) {
+      const src = `${item.size || ""} ${item.name || ""}`;
+      const m = src.match(/R(1[3-9]|2[0-2])/i);
+      return m ? `R${m[1]}` : "";
+    }
+
+    function detectSize(item) {
+      const src = `${item.size || ""} ${item.name || ""}`;
+      const m = src.match(/(\d{3})\s*[/\-]\s*(\d{2})\s*[/\-]?\s*[rр]\s*(\d{2})/i);
+      return m ? `${m[1]}/${m[2]}R${m[3]}` : (item.size || "—");
+    }
+
+    function detectBrand(name) {
+      const known = ["HANKOOK", "PETLAS", "HIFLY", "TRIANGLE", "POWERTRAC", "PREMIORRI", "ESTRADA", "MARSHAL", "ROSAVA", "AOSEN", "MATADOR", "HORIZON", "VIAMAGGIORE"];
+      const up = String(name || "").toUpperCase();
+      for (const b of known) if (up.includes(b)) return b;
+      return "ІНШІ";
+    }
+
+    function normalizeToken(tok) {
+      let s = tok.trim().toLowerCase();
+      for (const [ua, en] of Object.entries(BRAND_ALIASES)) s = s.replaceAll(ua, en);
+      if (!/^\d{7,}$/.test(s)) {
+        const sm = s.match(/^(1\d{2}|2\d{2}|3\d{2})[/\-.xх\s]+(\d{2})[/\-.\s]*[rрz]?(\d{2})$/);
+        if (sm) return `${sm[1]}/${sm[2]}r${sm[3]}`;
+        const rm = s.match(/^[rр](\d{2})$/);
+        if (rm) return `r${rm[1]}`;
+      }
+      return s;
+    }
+
+    function matchesSearch(item, rawQuery) {
+      const q = rawQuery.trim().toLowerCase();
+      if (!q) return true;
+      const hay = `${item.pallet} ${item.code} ${item.size} ${item.name}`.toLowerCase();
+      const hayCompact = hay.replace(/\/r/g, "r");
+      const fullSize = q.match(/^(1\d{2}|2\d{2}|3\d{2})\s+(\d{2})\s+[rрz]?\s*(\d{2})$/);
+      if (fullSize) return hayCompact.includes(`${fullSize[1]}/${fullSize[2]}r${fullSize[3]}`);
+      const tokens = q.split(/\s+/).map(normalizeToken).filter(Boolean);
+      return tokens.every(tok => hay.includes(tok) || hayCompact.includes(tok));
+    }
+
+    function locLabel(p) {
+      const s = String(p || "").trim();
+      return /^\d+$/.test(s) ? `Палета №${s}` : s;
+    }
+
+    function showToast(msg) {
+      const el = document.getElementById("toastEl");
+      el.textContent = msg;
+      el.classList.remove("hidden");
+      clearTimeout(showToast._t);
+      showToast._t = setTimeout(() => el.classList.add("hidden"), 2300);
+    }
+
+    function pushHistory(action, code, was, became, loc, name = "") {
+      const time = new Date().toISOString().slice(0, 16).replace("T", " ");
+      state.history.unshift({ time, user: "MiniApp", code, action, was, became, diff: became - was, loc, name });
+      if (state.history.length > 120) state.history.pop();
+    }
+
+    function applyTheme(dark) {
+      state.dark = dark;
+      document.documentElement.classList.toggle("dark", dark);
+      document.getElementById("themeToggleBtn").textContent = dark ? "☀️" : "🌙";
+    }
+
+    function initTelegram() {
+      if (!tg) return;
+      try {
+        tg.ready();
+        tg.expand();
+        if (tg.colorScheme === "dark") applyTheme(true);
+        const u = tg.initDataUnsafe && tg.initDataUnsafe.user;
+        if (u) {
+          const fn = [u.first_name, u.last_name].filter(Boolean).join(" ");
+          document.getElementById("userSubtitle").textContent = `${fn} • Склад автошини`;
+        }
+        if (isInTelegram) {
+          document.getElementById("modeBadge").textContent = hasBackendApi ? "Live Telegram" : "Telegram";
+          tg.BackButton.onClick(() => switchTab("catalog"));
+        }
+      } catch (e) {}
+    }
+
+    function getFilteredTires() {
+      return state.tires.filter(item => {
+        if (state.loc !== "all" && String(item.pallet).trim().toLowerCase() !== state.loc.toLowerCase()) return false;
+        if (state.season !== "all" && detectSeason(item.name) !== state.season) return false;
+        if (state.rim !== "all" && detectRim(item) !== state.rim) return false;
+        if (!matchesSearch(item, state.search)) return false;
+        return true;
+      });
+    }
+
+    function getLocTotals() {
+      const map = {};
+      state.tires.forEach(t => {
+        const k = String(t.pallet || "").trim();
+        if (k) map[k] = (map[k] || 0) + Number(t.qty || 0);
+      });
+      return map;
+    }
+
+    function renderKPIs() {
+      const totalQty = state.tires.reduce((s, t) => s + Number(t.qty || 0), 0);
+      const locTotals = getLocTotals();
+      const activeLocs = Object.values(locTotals).filter(v => v > 0).length;
+      let overloaded = 0;
+      for (let i = 1; i <= 44; i++) if ((locTotals[String(i)] || 0) > PALLET_MAX) overloaded++;
+      document.getElementById("kpiQty").textContent = totalQty;
+      document.getElementById("kpiRows").textContent = state.tires.length;
+      document.getElementById("kpiLocs").textContent = activeLocs;
+      document.getElementById("kpiOverload").textContent = overloaded;
+      document.getElementById("undoBtn").classList.toggle("hidden", state.undoStack.length === 0);
+      document.getElementById("undoBtn").classList.toggle("flex", state.undoStack.length > 0);
+    }
+
+    function renderLocSelects() {
+      const locs = Array.from(new Set(state.tires.map(t => String(t.pallet).trim()).filter(Boolean)));
+      locs.sort((a, b) => {
+        const na = /^\d+$/.test(a), nb = /^\d+$/.test(b);
+        if (na && nb) return Number(a) - Number(b);
+        if (na) return -1;
+        if (nb) return 1;
+        return a.localeCompare(b, "uk");
+      });
+      const opts = locs.map(l => `<option value="${l}">${locLabel(l)}</option>`).join("");
+      const filterEl = document.getElementById("locFilterSelect");
+      const curFilter = state.loc;
+      filterEl.innerHTML = `<option value="all">Усі локації (${locs.length})</option>` + opts;
+      filterEl.value = locs.includes(curFilter) ? curFilter : "all";
+      document.getElementById("mpFromSelect").innerHTML = opts;
+    }
+
+    function renderFilterPills() {
+      document.querySelectorAll(".season-pill").forEach(btn => {
+        const active = btn.dataset.season === state.season;
+        btn.className = `season-pill shrink-0 rounded-full px-3 py-1 text-xs font-semibold transition ${active ? "tg-btn shadow-sm" : "surface border text-hint"}`;
+      });
+      document.querySelectorAll(".rim-pill").forEach(btn => {
+        const active = btn.dataset.rim === state.rim;
+        btn.className = `rim-pill shrink-0 rounded-lg px-2.5 py-1 text-xs font-medium transition ${active ? "tg-btn shadow-sm" : "surface border text-hint"}`;
+      });
+    }
+
+    function renderCatalog() {
+      const items = getFilteredTires();
+      const hasFilters = state.search || state.season !== "all" || state.rim !== "all" || state.loc !== "all";
+      document.getElementById("catalogCountText").textContent = `Показано ${items.length} з ${state.tires.length} позицій`;
+      document.getElementById("resetFiltersBtn").classList.toggle("hidden", !hasFilters);
+      document.getElementById("clearSearchBtn").classList.toggle("hidden", !state.search);
+
+      const listEl = document.getElementById("catalogList");
+      if (!items.length) {
+        listEl.innerHTML = `<div class="surface rounded-2xl border p-8 text-center"><p class="text-2xl mb-1">🔍</p><p class="text-sm font-semibold">Нічого не знайдено</p></div>`;
+        return;
+      }
+
+      listEl.innerHTML = items.slice(0, 80).map(item => {
+        const photoSrc = getTirePhotoSrc(item.name);
+        const season = detectSeason(item.name);
+        const sBadge = season === "зима" ? "❄️ Зима" : season === "літо" ? "☀️ Літо" : season === "всесезон" ? "🌦️ Всесезон" : "";
+        return `
+          <article class="surface rounded-2xl border p-3.5 shadow-sm">
+            <div class="flex gap-3">
+              ${photoSrc ? `<img src="${photoSrc}" alt="Протектор" class="h-16 w-16 shrink-0 rounded-xl border object-cover" style="border-color: var(--tg-border);" />` : `<div class="surface flex h-16 w-16 shrink-0 items-center justify-center rounded-xl border text-2xl">🛞</div>`}
+              <div class="min-w-0 flex-1">
+                <div class="flex flex-wrap items-center justify-between gap-1.5">
+                  <div class="flex flex-wrap items-center gap-1.5">
+                    <span class="rounded-lg bg-sky-500/15 px-2 py-0.5 text-[11px] font-bold text-sky-700 dark:text-sky-300">${locLabel(item.pallet)}</span>
+                    <span class="text-hint font-mono text-[11px]">${item.code}</span>
+                    ${sBadge ? `<span class="text-[11px] font-medium text-hint">${sBadge}</span>` : ""}
+                  </div>
+                  <span class="rounded-lg px-2 py-0.5 text-xs font-bold ${item.qty > 0 ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-300" : "bg-rose-500/15 text-rose-500"}">${item.qty} шт.</span>
+                </div>
+                <h3 class="mt-1.5 text-sm font-semibold leading-snug">${item.name}</h3>
+              </div>
+            </div>
+            <div class="mt-3 flex flex-wrap items-center justify-between gap-2 border-t pt-2.5" style="border-color: var(--tg-border);">
+              <div class="flex items-center gap-1">
+                <button type="button" data-action="qty" data-delta="-4" data-id="${item.id}" class="surface h-7 rounded-lg border px-2 text-xs font-bold active:scale-95">−4</button>
+                <button type="button" data-action="qty" data-delta="-1" data-id="${item.id}" class="surface h-7 w-7 rounded-lg border text-xs font-bold active:scale-95">−1</button>
+                <button type="button" data-action="qty" data-delta="1" data-id="${item.id}" class="surface h-7 w-7 rounded-lg border text-xs font-bold active:scale-95">+1</button>
+                <button type="button" data-action="qty" data-delta="4" data-id="${item.id}" class="surface h-7 rounded-lg border px-2 text-xs font-bold active:scale-95">+4</button>
+              </div>
+              <button type="button" data-action="open-move" data-id="${item.id}" class="surface h-8 rounded-xl border px-3 text-xs font-semibold">🚚 Перемістити</button>
+            </div>
+          </article>
+        `;
+      }).join("") + (items.length > 80 ? `<p class="text-hint py-2 text-center text-xs">Показано перші 80 з ${items.length} результатів.</p>` : "");
+    }
+
+    function renderPallets() {
+      const totals = getLocTotals();
+      document.getElementById("specialLocsGrid").innerHTML = SPECIAL_LOCS.map(loc => {
+        const q = totals[loc] || 0;
+        return `
+          <button type="button" data-open-loc="${loc}" class="surface rounded-2xl border p-3.5 text-left shadow-sm transition hover:border-sky-500/60">
+            <div class="flex items-center justify-between">
+              <span class="text-sm font-bold capitalize">🏬 ${loc}</span>
+              <span class="rounded-full bg-sky-500/15 px-2.5 py-0.5 text-xs font-bold text-sky-600 dark:text-sky-300">${q} шт.</span>
+            </div>
+          </button>`;
+      }).join("");
+
+      const cells = [];
+      for (let i = 1; i <= 44; i++) {
+        const q = totals[String(i)] || 0;
+        const pct = Math.min(100, Math.round((q / PALLET_MAX) * 100));
+        const barColor = q > PALLET_MAX ? "bg-rose-500" : q >= 12 ? "bg-amber-500" : q > 0 ? "bg-emerald-500" : "bg-slate-400/30";
+        cells.push(`
+          <button type="button" data-open-loc="${i}" class="surface rounded-2xl border p-3 text-left shadow-sm transition hover:border-sky-500/60">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-bold">Палета №${i}</span>
+              <span class="text-xs font-bold tabular-nums ${q > PALLET_MAX ? "text-rose-500" : ""}">${q}/${PALLET_MAX}</span>
+            </div>
+            <div class="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-slate-500/15">
+              <div class="${barColor} h-full rounded-full" style="width:${pct}%"></div>
+            </div>
+          </button>
+        `);
+      }
+      document.getElementById("palletsGrid").innerHTML = cells.join("");
+    }
+
+    // ---------- STATS (ALL 13 SECTIONS) ----------
+    function barListCard(title, entries, unit = "шт.") {
+      const maxV = Math.max(1, ...entries.map(e => e[1]));
+      return `
+        <div class="surface rounded-2xl border p-4 shadow-sm space-y-2.5">
+          <h3 class="text-sm font-bold">${title}</h3>
+          <div class="space-y-2">
+            ${entries.map(([k, v]) => `
+              <div>
+                <div class="flex justify-between text-xs mb-0.5"><span class="font-medium">${k}</span><span class="font-bold tabular-nums">${v} ${unit}</span></div>
+                <div class="h-1.5 w-full rounded-full bg-slate-500/15 overflow-hidden"><div class="tg-btn h-full rounded-full" style="width:${Math.round((v / maxV) * 100)}%"></div></div>
+              </div>
+            `).join("")}
+          </div>
+        </div>`;
+    }
+
+    function exportDashboardCsv() {
+      const header = "№ палети,Код товару,Розмір,Тип (модель) резини,Кількість";
+      const rows = state.tires.map(t => `${t.pallet},${t.code},"${t.size}","${t.name.replace(/"/g, '""')}",${t.qty}`);
+      const blob = new Blob(["\uFEFF" + [header, ...rows].join("\n")], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a"); a.href = url; a.download = "tire-bot-dashboard.csv"; a.click();
+      URL.revokeObjectURL(url);
+      showToast("Дашборд експортовано у CSV");
+    }
+
+    function renderStats() {
+      document.querySelectorAll(".stat-menu-btn").forEach(b => {
+        const active = b.dataset.stat === state.activeStat;
+        b.className = `stat-menu-btn ${b.dataset.stat === "full" ? "col-span-2 sm:col-span-3 text-center" : "text-left"} rounded-xl px-3 py-2 text-xs font-semibold transition ${
+          active ? "tg-btn shadow-sm" : "bg-emerald-600/15 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-600/25"
+        }`;
+      });
+      const labels = {
+        sizes: "📏 Розміри", brands: "🏭 Бренди", locations: "📍 Локації", movement: "🔄 Рух",
+        quality: "🧪 Якість даних", sklad: "⚖️ Склад", zal: "🪟 Вітрина зал", charts: "📈 Графіки",
+        sales: "💰 Звірка продажів", excel: "📥 Excel-дашборд", zakupivlya: "🛒 Закупівля",
+        plan: "🧮 План перевірок", full: "📋 Повна"
+      };
+      document.getElementById("statsActiveLabel").textContent = labels[state.activeStat] || "";
+
+      const area = document.getElementById("statsContentArea");
+      const seasons = {}, rims = {}, sizes = {}, brands = {}, locs = {};
+      state.tires.forEach(t => {
+        const q = Number(t.qty || 0);
+        seasons[detectSeason(t.name)] = (seasons[detectSeason(t.name)] || 0) + q;
+        const r = detectRim(t) || "Інше"; rims[r] = (rims[r] || 0) + q;
+        const sz = detectSize(t); sizes[sz] = (sizes[sz] || 0) + q;
+        const br = detectBrand(t.name); brands[br] = (brands[br] || 0) + q;
+        const lc = locLabel(t.pallet); locs[lc] = (locs[lc] || 0) + q;
+      });
+
+      const sec = state.activeStat;
+      if (sec === "sizes") {
+        const topSizes = Object.entries(sizes).sort((a, b) => b[1] - a[1]);
+        area.innerHTML = barListCard("📏 Розміри (за кількістю шин)", topSizes.slice(0, 25));
+      } else if (sec === "brands") {
+        area.innerHTML = barListCard("🏭 Бренди на складі", Object.entries(brands).sort((a, b) => b[1] - a[1]));
+      } else if (sec === "locations") {
+        area.innerHTML = barListCard("📍 Розподіл по локаціях", Object.entries(locs).sort((a, b) => b[1] - a[1]).slice(0, 30));
+      } else if (sec === "movement") {
+        area.innerHTML = `<div class="surface rounded-2xl border p-4 shadow-sm space-y-2">
+          <h3 class="text-sm font-bold">🔄 Останній рух по журналу (${state.history.length} записів)</h3>
+          <div class="max-h-96 overflow-y-auto space-y-1.5 text-xs">
+            ${state.history.slice(0, 40).map(h => `<div class="flex justify-between gap-2 border-b pb-1" style="border-color: var(--tg-border);"><span><b>${h.code}</b> · ${h.action} (${h.was} → ${h.became})</span><span class="text-hint shrink-0">${h.time}</span></div>`).join("") || "<p class='text-hint'>Записів руху немає.</p>"}
+          </div></div>`;
+      } else if (sec === "quality") {
+        const zeros = state.tires.filter(t => t.qty === 0);
+        const dupMap = {};
+        state.tires.forEach(t => {
+          const k = `${t.code}__${String(t.pallet).trim().toLowerCase()}`;
+          dupMap[k] = (dupMap[k] || 0) + 1;
+        });
+        const dups = Object.entries(dupMap).filter(([, c]) => c > 1);
+        const noSize = state.tires.filter(t => !detectRim(t));
+        area.innerHTML = `<div class="surface rounded-2xl border p-4 shadow-sm space-y-2.5 text-xs">
+          <h3 class="text-sm font-bold">🧪 Якість даних таблиці</h3>
+          <p>• Рядків із кількістю 0 шт.: <b>${zeros.length}</b></p>
+          <p>• Дублів (однаковий код на одній локації): <b>${dups.length}</b></p>
+          <p>• Позицій без розпізнаного радіуса: <b>${noSize.length}</b></p>
+          ${dups.length ? `<div class="pt-1 text-amber-600 dark:text-amber-400">Дублі: ${dups.map(([k]) => k.replace("__", " @ ")).join(", ")}</div>` : ""}
+        </div>`;
+      } else if (sec === "sklad") {
+        const ourByCode = {};
+        state.tires.forEach(t => { if (t.code) ourByCode[t.code] = (ourByCode[t.code] || 0) + Number(t.qty || 0); });
+        const diffs = [];
+        state.sklad.forEach(sk => {
+          const ours = ourByCode[sk.code] || 0;
+          if (ours !== sk.qty) diffs.push({ code: sk.code, name: sk.name, ours, sklad: sk.qty, diff: ours - sk.qty });
+        });
+        area.innerHTML = `<div class="surface rounded-2xl border p-4 shadow-sm space-y-2">
+          <div class="flex items-center justify-between"><h3 class="text-sm font-bold">⚖️ Звірка з аркушем «Склад»</h3><span class="rounded-full bg-amber-500/15 px-2.5 py-0.5 text-xs font-bold text-amber-600 dark:text-amber-300">Розбіжностей: ${diffs.length}</span></div>
+          <div class="max-h-96 overflow-y-auto space-y-1.5 text-xs">
+            ${diffs.map(d => `<div class="flex justify-between gap-2 border-b pb-1" style="border-color: var(--tg-border);"><span class="truncate"><b>${d.code}</b> · ${d.name}</span><span class="shrink-0 font-bold ${d.diff < 0 ? "text-rose-500" : "text-emerald-600"}">У нас: ${d.ours} / Склад: ${d.sklad}</span></div>`).join("") || "<p class='text-emerald-600 font-semibold'>Все збігається!</p>"}
+          </div></div>`;
+      } else if (sec === "zal") {
+        const zalCodes = new Set(state.tires.filter(t => String(t.pallet).trim().toLowerCase() === "вітрина зал" && t.qty > 0).map(t => t.code));
+        const byCode = {};
+        state.tires.forEach(t => {
+          if (t.qty > 0 && !zalCodes.has(t.code)) {
+            if (!byCode[t.code]) byCode[t.code] = { code: t.code, name: t.name, total: 0, locs: [] };
+            byCode[t.code].total += t.qty;
+            byCode[t.code].locs.push(`${locLabel(t.pallet)} (${t.qty})`);
+          }
+        });
+        const missing = Object.values(byCode).sort((a, b) => b.total - a.total);
+        area.innerHTML = `<div class="surface rounded-2xl border p-4 shadow-sm space-y-2">
+          <h3 class="text-sm font-bold">🪟 Вітрина зал — немає на вітрині (${missing.length} кодів)</h3>
+          <div class="max-h-96 overflow-y-auto space-y-1.5 text-xs">
+            ${missing.slice(0, 40).map(m => `<div class="border-b pb-1" style="border-color: var(--tg-border);"><p class="font-semibold">${m.code} · ${m.name}</p><p class="text-hint">Є на складі (${m.total} шт.): ${m.locs.join(", ")}</p></div>`).join("")}
+          </div></div>`;
+      } else if (sec === "charts") {
+        area.innerHTML = `<div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          ${barListCard("📈 За сезонами", Object.entries(seasons).sort((a, b) => b[1] - a[1]))}
+          ${barListCard("📈 За радіусами", Object.entries(rims).sort((a, b) => b[1] - a[1]))}
+        </div>`;
+      } else if (sec === "sales") {
+        const outByCode = {};
+        state.history.forEach(h => {
+          if (h.diff < 0 && h.code && /^\d+$/.test(h.code)) {
+            outByCode[h.code] = (outByCode[h.code] || 0) + Math.abs(h.diff);
+          }
+        });
+        const rows = Object.entries(outByCode).sort((a, b) => b[1] - a[1]);
+        area.innerHTML = `<div class="surface rounded-2xl border p-4 shadow-sm space-y-2">
+          <h3 class="text-sm font-bold">💰 Звірка продажів / списань з історії</h3>
+          <div class="max-h-96 overflow-y-auto space-y-1.5 text-xs">
+            ${rows.slice(0, 30).map(([c, q]) => `<div class="flex justify-between border-b pb-1" style="border-color: var(--tg-border);"><span class="font-mono font-semibold">${c}</span><span class="font-bold text-rose-500">−${q} шт.</span></div>`).join("") || "<p class='text-hint'>Списань у журналі немає.</p>"}
+          </div></div>`;
+      } else if (sec === "excel") {
+        area.innerHTML = `<div class="surface rounded-2xl border p-4 shadow-sm space-y-3">
+          <h3 class="text-sm font-bold">📥 Експорт бази та дашборду</h3>
+          <p class="text-hint text-xs">Вивантажте актуальний стан таблиці у CSV для Excel або завантажте оновлений файл.</p>
+          <div class="flex flex-wrap gap-2">
+            <button id="statsExportBtn" type="button" class="tg-btn rounded-xl px-4 py-2 text-xs font-semibold shadow-sm">⬇️ Завантажити CSV</button>
+          </div></div>`;
+        document.getElementById("statsExportBtn").addEventListener("click", exportDashboardCsv);
+      } else if (sec === "zakupivlya") {
+        const byCode = {};
+        state.tires.forEach(t => {
+          if (!byCode[t.code]) byCode[t.code] = { code: t.code, name: t.name, qty: 0 };
+          byCode[t.code].qty += t.qty;
+        });
+        const low = Object.values(byCode).filter(x => x.qty <= 2).sort((a, b) => a.qty - b.qty);
+        area.innerHTML = `<div class="surface rounded-2xl border p-4 shadow-sm space-y-2">
+          <h3 class="text-sm font-bold">🛒 Закупівля — позиції з низьким залишком (&le; 2 шт.)</h3>
+          <div class="max-h-96 overflow-y-auto space-y-1.5 text-xs">
+            ${low.slice(0, 40).map(x => `<div class="flex justify-between gap-2 border-b pb-1" style="border-color: var(--tg-border);"><span class="truncate"><b>${x.code}</b> · ${x.name}</span><span class="shrink-0 font-bold text-rose-500">${x.qty} шт.</span></div>`).join("")}
+          </div></div>`;
+      } else if (sec === "plan") {
+        const totals = getLocTotals();
+        const prio = Object.entries(totals).filter(([, q]) => q > 0).sort((a, b) => b[1] - a[1]).slice(0, 15);
+        area.innerHTML = barListCard("🧮 План перевірок (найбільш завантажені локації)", prio.map(([k, v]) => [locLabel(k), v]));
+      } else {
+        // full
+        area.innerHTML = `<div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          ${barListCard("❄️☀️ За сезонами", Object.entries(seasons).sort((a, b) => b[1] - a[1]))}
+          ${barListCard("📏 За радіусами", Object.entries(rims).sort((a, b) => b[1] - a[1]))}
+          ${barListCard("🏭 Топ-8 брендів", Object.entries(brands).sort((a, b) => b[1] - a[1]).slice(0, 8))}
+          ${barListCard("📍 Топ-8 локацій", Object.entries(locs).sort((a, b) => b[1] - a[1]).slice(0, 8))}
+        </div>`;
+      }
+    }
+
+    // ---------- OPTIMIZE (/optimize) ----------
+    function computeOptimizePlan(mode) {
+      const sim = {}; // { "1": { code: {qty, size, name} } }
+      for (let i = 1; i <= 44; i++) sim[String(i)] = {};
+      state.tires.forEach(t => {
+        const p = String(t.pallet || "").trim();
+        if (/^\d+$/.test(p) && Number(p) >= 1 && Number(p) <= 44 && t.qty > 0) {
+          if (!sim[p][t.code]) sim[p][t.code] = { qty: 0, size: t.size, name: t.name };
+          sim[p][t.code].qty += t.qty;
+        }
+      });
+      const totOf = p => Object.values(sim[p]).reduce((s, v) => s + v.qty, 0);
+      const moves = [];
+
+      // 1. Розвантаження перевантажених (>16)
+      for (let i = 1; i <= 44; i++) {
+        const p = String(i);
+        while (totOf(p) > PALLET_MAX) {
+          const codes = Object.keys(sim[p]);
+          if (!codes.length) break;
+          const c = codes[codes.length - 1];
+          const excess = Math.min(sim[p][c].qty, totOf(p) - PALLET_MAX);
+          let target = null;
+          for (let j = 1; j <= 44; j++) {
+            const tp = String(j);
+            if (tp !== p && totOf(tp) + 1 <= PALLET_MAX) { target = tp; break; }
+          }
+          if (!target) break;
+          const take = Math.min(excess, PALLET_MAX - totOf(target));
+          sim[p][c].qty -= take;
+          if (!sim[target][c]) sim[target][c] = { qty: 0, size: sim[p][c].size, name: sim[p][c].name };
+          sim[target][c].qty += take;
+          if (sim[p][c].qty <= 0) delete sim[p][c];
+          moves.push({ from: p, to: target, code: c, name: sim[target][c].name, qty: take });
+        }
+      }
+
+      // 2. Ущільнення (mode === "min")
+      if (mode === "min") {
+        const nonEmpty = Array.from({ length: 44 }, (_, i) => String(i + 1)).filter(p => totOf(p) > 0).sort((a, b) => totOf(a) - totOf(b));
+        for (const src of nonEmpty) {
+          const need = totOf(src);
+          if (need === 0) continue;
+          const freeSpace = Array.from({ length: 44 }, (_, i) => String(i + 1))
+            .filter(dst => dst !== src && totOf(dst) > 0 && totOf(dst) < PALLET_MAX)
+            .reduce((s, dst) => s + (PALLET_MAX - totOf(dst)), 0);
+          if (freeSpace >= need) {
+            for (const c of Object.keys(sim[src])) {
+              let rem = sim[src][c].qty;
+              for (let j = 1; j <= 44 && rem > 0; j++) {
+                const dst = String(j);
+                if (dst === src || totOf(dst) === 0 || totOf(dst) >= PALLET_MAX) continue;
+                const take = Math.min(rem, PALLET_MAX - totOf(dst));
+                if (take > 0) {
+                  if (!sim[dst][c]) sim[dst][c] = { qty: 0, size: sim[src][c].size, name: sim[src][c].name };
+                  sim[dst][c].qty += take;
+                  rem -= take;
+                  moves.push({ from: src, to: dst, code: c, name: sim[dst][c].name, qty: take });
+                }
+              }
+              delete sim[src][c];
+            }
+          }
+        }
+      }
+
+      const usedBefore = Array.from({ length: 44 }, (_, i) => String(i + 1)).filter(p => state.tires.some(t => String(t.pallet).trim() === p && t.qty > 0)).length;
+      const usedAfter = Array.from({ length: 44 }, (_, i) => String(i + 1)).filter(p => totOf(p) > 0).length;
+      const overBefore = Array.from({ length: 44 }, (_, i) => String(i + 1)).filter(p => state.tires.filter(t => String(t.pallet).trim() === p).reduce((s, t) => s + t.qty, 0) > PALLET_MAX).length;
+      const overAfter = Array.from({ length: 44 }, (_, i) => String(i + 1)).filter(p => totOf(p) > PALLET_MAX).length;
+      return { moves, usedBefore, usedAfter, overBefore, overAfter, freed: Math.max(0, usedBefore - usedAfter), sim };
+    }
+
+    function renderOptimize() {
+      document.querySelectorAll(".opt-mode-btn").forEach(b => {
+        const active = b.dataset.optmode === state.optMode;
+        b.className = `opt-mode-btn rounded-xl px-3 py-1.5 text-xs font-semibold transition ${active ? "tg-btn shadow-sm" : "surface border text-hint"}`;
+      });
+
+      const plan = computeOptimizePlan(state.optMode);
+      document.getElementById("optSummaryKPIs").innerHTML = `
+        <div class="surface rounded-xl border p-2.5"><p class="text-hint text-[10px]">Переміщень</p><p class="text-base font-bold">${plan.moves.length}</p></div>
+        <div class="surface rounded-xl border p-2.5"><p class="text-hint text-[10px]">Палет (було → стане)</p><p class="text-base font-bold">${plan.usedBefore} → ${plan.usedAfter}</p></div>
+        <div class="surface rounded-xl border p-2.5"><p class="text-hint text-[10px]">Звільниться</p><p class="text-base font-bold text-emerald-600">+${plan.freed}</p></div>
+        <div class="surface rounded-xl border p-2.5"><p class="text-hint text-[10px]">Перевантаж. (було → стане)</p><p class="text-base font-bold">${plan.overBefore} → ${plan.overAfter}</p></div>
+      `;
+
+      document.getElementById("applyOptPlanBtn").disabled = plan.moves.length === 0;
+      document.getElementById("undoOptPlanBtn").classList.toggle("hidden", !state.optSnapshot);
+
+      const listEl = document.getElementById("optMovesList");
+      listEl.innerHTML = plan.moves.length ? `
+        <h3 class="text-sm font-bold mb-2">План переміщень (${plan.moves.length} кроків)</h3>
+        <div class="max-h-96 overflow-y-auto space-y-1.5 text-xs">
+          ${plan.moves.map((m, idx) => `
+            <div class="flex items-center justify-between gap-2 border-b pb-1.5" style="border-color: var(--tg-border);">
+              <span class="truncate"><b>${idx + 1}.</b> Палета №${m.from} → <b>Палета №${m.to}</b> · ${m.code} (${m.name})</span>
+              <span class="shrink-0 rounded-lg bg-sky-500/15 px-2 py-0.5 font-bold text-sky-600 dark:text-sky-300">${m.qty} шт.</span>
+            </div>
+          `).join("")}
+        </div>
+      ` : `<p class="text-emerald-600 text-sm font-semibold text-center py-4">✅ Палети 1–44 вже оптимальні!</p>`;
+    }
+
+    function renderTabs() {
+      const views = {
+        catalog: document.getElementById("viewCatalog"),
+        pallets: document.getElementById("viewPallets"),
+        stats: document.getElementById("viewStats"),
+        optimize: document.getElementById("viewOptimize")
+      };
+      Object.entries(views).forEach(([k, el]) => el.classList.toggle("hidden", k !== state.activeTab));
+      document.querySelectorAll(".nav-tab").forEach(btn => {
+        const active = btn.dataset.tab === state.activeTab;
+        btn.className = `nav-tab flex flex-col items-center justify-center rounded-xl py-1.5 text-[11px] font-semibold transition ${
+          active ? "bg-sky-500/15 text-sky-600 dark:text-sky-400" : "text-hint hover:opacity-80"
+        }`;
+      });
+      if (isInTelegram && tg && tg.BackButton) {
+        if (state.activeTab === "catalog") tg.BackButton.hide(); else tg.BackButton.show();
+      }
+    }
+
+    function renderAll() {
+      renderKPIs();
+      renderLocSelects();
+      renderFilterPills();
+      renderCatalog();
+      renderPallets();
+      renderStats();
+      renderOptimize();
+      renderTabs();
+    }
+
+    function switchTab(tab) {
+      state.activeTab = tab;
+      renderAll();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+
+    async function applyQtyDelta(id, delta, reason = "Коригування") {
+      const tire = state.tires.find(t => t.id === id);
+      if (!tire) return;
+      const oldQty = tire.qty;
+      const newQty = Math.max(0, oldQty + delta);
+      if (newQty === oldQty) return;
+      state.undoStack.push({ type: "qty", id, oldQty, newQty });
+      tire.qty = newQty;
+      pushHistory(reason, tire.code, oldQty, newQty, locLabel(tire.pallet), tire.name);
+      saveLocal(); renderAll();
+      if (hasBackendApi) try { await apiCall("/api/qty", "POST", { row: tire.row, code: tire.code, delta: newQty - oldQty, reason }); } catch (e) { showToast("Помилка синхронізації з Google Sheets"); }
+    }
+
+    // Listeners
+    document.getElementById("themeToggleBtn").addEventListener("click", () => applyTheme(!state.dark));
+    document.getElementById("searchInput").addEventListener("input", e => { state.search = e.target.value; renderCatalog(); });
+    document.getElementById("clearSearchBtn").addEventListener("click", () => { state.search = ""; document.getElementById("searchInput").value = ""; renderCatalog(); });
+    document.getElementById("locFilterSelect").addEventListener("change", e => { state.loc = e.target.value; renderCatalog(); });
+    document.getElementById("resetFiltersBtn").addEventListener("click", () => {
+      state.search = ""; state.season = "all"; state.rim = "all"; state.loc = "all";
+      document.getElementById("searchInput").value = ""; renderAll();
+    });
+    document.querySelectorAll(".season-pill").forEach(b => b.addEventListener("click", () => { state.season = b.dataset.season; renderFilterPills(); renderCatalog(); }));
+    document.querySelectorAll(".rim-pill").forEach(b => b.addEventListener("click", () => { state.rim = b.dataset.rim; renderFilterPills(); renderCatalog(); }));
+    document.querySelectorAll(".nav-tab").forEach(b => b.addEventListener("click", () => switchTab(b.dataset.tab)));
+    document.querySelectorAll(".stat-menu-btn").forEach(b => b.addEventListener("click", () => { state.activeStat = b.dataset.stat; renderStats(); }));
+    document.querySelectorAll(".opt-mode-btn").forEach(b => b.addEventListener("click", () => { state.optMode = b.dataset.optmode; renderOptimize(); }));
+
+    document.getElementById("undoBtn").addEventListener("click", async () => {
+      const last = state.undoStack.pop();
+      if (!last) return;
+      if (last.type === "qty") {
+        const t = state.tires.find(x => x.id === last.id);
+        if (t) {
+          t.qty = last.oldQty;
+          pushHistory("Undo", t.code, last.newQty, last.oldQty, locLabel(t.pallet), t.name);
+          saveLocal(); renderAll();
+          if (hasBackendApi) try { await apiCall("/api/qty", "POST", { row: t.row, code: t.code, delta: last.oldQty - last.newQty, reason: "Undo" }); } catch (e) {}
+        }
+      }
+    });
+
+    document.getElementById("catalogList").addEventListener("click", e => {
+      const btn = e.target.closest("[data-action]");
+      if (!btn) return;
+      const id = Number(btn.dataset.id);
+      const act = btn.dataset.action;
+      const t = state.tires.find(x => x.id === id);
+      if (!t) return;
+      if (act === "qty") applyQtyDelta(id, Number(btn.dataset.delta));
+      else if (act === "open-move") {
+        state.moveTargetId = id;
+        document.getElementById("moveItemTitle").textContent = `${locLabel(t.pallet)} • ${t.name} (${t.qty} шт.)`;
+        document.getElementById("moveQtyInput").value = Math.min(4, Math.max(1, t.qty));
+        document.getElementById("moveQtyInput").max = t.qty;
+        document.getElementById("moveItemModal").classList.remove("hidden");
+        document.getElementById("moveItemModal").classList.add("flex");
+      }
+    });
+
+    document.getElementById("palletsGrid").addEventListener("click", e => { const b = e.target.closest("[data-open-loc]"); if (b) { state.loc = b.dataset.openLoc; switchTab("catalog"); } });
+    document.getElementById("specialLocsGrid").addEventListener("click", e => { const b = e.target.closest("[data-open-loc]"); if (b) { state.loc = b.dataset.openLoc; switchTab("catalog"); } });
+
+    document.getElementById("suggestPalletsBtn").addEventListener("click", () => {
+      const totals = getLocTotals();
+      const free = [], light = [];
+      for (let i = 1; i <= 44; i++) {
+        const q = totals[String(i)] || 0;
+        if (q === 0) free.push(i);
+        else if (q <= 8) light.push(`№${i} (${q})`);
+      }
+      const box = document.getElementById("suggestBox");
+      box.classList.remove("hidden");
+      box.innerHTML = `<b>Порожні палети:</b> ${free.slice(0, 10).map(n => `№${n}`).join(", ") || "немає"}<br><b>Доступні (&le;8 шт.):</b> ${light.slice(0, 8).join(", ") || "немає"}`;
+    });
+
+    // Apply & Undo Optimization
+    document.getElementById("applyOptPlanBtn").addEventListener("click", async () => {
+      const plan = computeOptimizePlan(state.optMode);
+      if (!plan.moves.length) return;
+      state.optSnapshot = JSON.stringify(state.tires);
+      // Rebuild numeric pallets 1-44 from plan.sim while keeping non-numeric locations
+      const nonNumeric = state.tires.filter(t => !(/^\d+$/.test(String(t.pallet).trim()) && Number(t.pallet) >= 1 && Number(t.pallet) <= 44));
+      let nid = state.nextId;
+      const rebuilt = [];
+      for (let i = 1; i <= 44; i++) {
+        const p = String(i);
+        for (const [code, info] of Object.entries(plan.sim[p])) {
+          rebuilt.push({ id: nid++, row: null, pallet: p, code, size: info.size, name: info.name, qty: info.qty });
+        }
+      }
+      state.tires = [...rebuilt, ...nonNumeric];
+      state.nextId = nid;
+      pushHistory("Оптимізація", "—", plan.usedBefore, plan.usedAfter, "палети 1–44");
+      saveLocal(); renderAll();
+      showToast(`Оптимізовано! Звільнено палет: ${plan.freed}`);
+      if (hasBackendApi) {
+        try { await apiCall("/api/optimize/apply", "POST", { mode: state.optMode }); await syncFromBackend(); } catch (e) { showToast("Помилка запису в Google Sheets"); }
+      }
+    });
+
+    document.getElementById("undoOptPlanBtn").addEventListener("click", async () => {
+      if (!state.optSnapshot) return;
+      state.tires = JSON.parse(state.optSnapshot);
+      state.optSnapshot = null;
+      pushHistory("Відміна оптимізації", "—", 0, 0, "палети 1–44");
+      saveLocal(); renderAll();
+      showToast("Оптимізацію скасовано");
+      if (hasBackendApi) {
+        try { await apiCall("/api/optimize/undo", "POST", {}); await syncFromBackend(); } catch (e) {}
+      }
+    });
+
+    document.getElementById("cleanupZeroBtn").addEventListener("click", async () => {
+      const before = state.tires.length;
+      state.tires = state.tires.filter(t => t.qty > 0);
+      const removed = before - state.tires.length;
+      pushHistory("Очищення 0 шт.", "—", before, state.tires.length, "таблиця");
+      saveLocal(); renderAll(); showToast(`Видалено рядків з 0 шт.: ${removed}`);
+      if (hasBackendApi) try { await apiCall("/api/cleanup", "POST", {}); await syncFromBackend(); } catch (e) {}
+    });
+
+    // Modals
+    document.getElementById("openAddModalBtn").addEventListener("click", () => { document.getElementById("addTireModal").classList.remove("hidden"); document.getElementById("addTireModal").classList.add("flex"); });
+    ["closeAddModalBtn", "cancelAddModalBtn"].forEach(id => document.getElementById(id).addEventListener("click", () => { document.getElementById("addTireModal").classList.add("hidden"); document.getElementById("addTireModal").classList.remove("flex"); }));
+    document.getElementById("addTireForm").addEventListener("submit", async e => {
+      e.preventDefault();
+      const pallet = document.getElementById("newLocInput").value.trim();
+      const qty = Number(document.getElementById("newQtyInput").value);
+      const code = document.getElementById("newCodeInput").value.trim();
+      const size = document.getElementById("newSizeInput").value.trim();
+      const name = document.getElementById("newNameInput").value.trim();
+      if (!pallet || !qty || !code || !name) return;
+      state.tires.unshift({ id: state.nextId++, row: null, pallet, code, size, name, qty });
+      pushHistory("Додано", code, 0, qty, locLabel(pallet), name);
+      saveLocal(); e.target.reset();
+      document.getElementById("addTireModal").classList.add("hidden"); document.getElementById("addTireModal").classList.remove("flex");
+      renderAll(); showToast("Шину додано");
+      if (hasBackendApi) try { await apiCall("/api/add", "POST", { pallet, code, size, name, qty }); await syncFromBackend(); } catch (err) {}
+    });
+
+    ["closeMoveModalBtn", "cancelMoveModalBtn"].forEach(id => document.getElementById(id).addEventListener("click", () => { document.getElementById("moveItemModal").classList.add("hidden"); document.getElementById("moveItemModal").classList.remove("flex"); }));
+    document.getElementById("moveItemForm").addEventListener("submit", async e => {
+      e.preventDefault();
+      const t = state.tires.find(x => x.id === state.moveTargetId);
+      const to = document.getElementById("moveToInput").value.trim();
+      const qty = Math.min(t ? t.qty : 0, Number(document.getElementById("moveQtyInput").value));
+      if (!t || !to || qty <= 0) return;
+      t.qty -= qty;
+      const existing = state.tires.find(x => x.code === t.code && String(x.pallet).trim().toLowerCase() === to.toLowerCase());
+      if (existing) existing.qty += qty;
+      else state.tires.unshift({ id: state.nextId++, row: null, pallet: to, code: t.code, size: t.size, name: t.name, qty });
+      pushHistory("Переміщено", t.code, t.qty + qty, t.qty, `${locLabel(t.pallet)} → ${locLabel(to)}`, t.name);
+      saveLocal();
+      document.getElementById("moveItemModal").classList.add("hidden"); document.getElementById("moveItemModal").classList.remove("flex");
+      renderAll(); showToast("Переміщено");
+      if (hasBackendApi) try { await apiCall("/api/move", "POST", { from_row: t.row, code: t.code, to_pallet: to, qty }); await syncFromBackend(); } catch (err) {}
+    });
+
+    document.getElementById("openMovePalletModalBtn").addEventListener("click", () => { document.getElementById("movePalletModal").classList.remove("hidden"); document.getElementById("movePalletModal").classList.add("flex"); });
+    ["closeMovePalletBtn", "cancelMovePalletBtn"].forEach(id => document.getElementById(id).addEventListener("click", () => { document.getElementById("movePalletModal").classList.add("hidden"); document.getElementById("movePalletModal").classList.remove("flex"); }));
+    document.getElementById("movePalletForm").addEventListener("submit", async e => {
+      e.preventDefault();
+      const fromLoc = document.getElementById("mpFromSelect").value;
+      const toLoc = document.getElementById("mpToInput").value.trim();
+      if (!fromLoc || !toLoc || fromLoc === toLoc) return;
+      let moved = 0;
+      state.tires.forEach(t => { if (String(t.pallet).trim() === fromLoc) { t.pallet = toLoc; moved++; } });
+      pushHistory("Перенесено палету", "—", moved, moved, `${locLabel(fromLoc)} → ${locLabel(toLoc)}`);
+      saveLocal();
+      document.getElementById("movePalletModal").classList.add("hidden"); document.getElementById("movePalletModal").classList.remove("flex");
+      renderAll(); showToast(`Перенесено ${moved} позицій`);
+      if (hasBackendApi) try { await apiCall("/api/movepallet", "POST", { from_loc: fromLoc, to_loc: toLoc }); await syncFromBackend(); } catch (err) {}
+    });
+
+    loadLocal();
+    initTelegram();
+    renderAll();
+    syncFromBackend();
+  </script>
+</body>
+</html>
