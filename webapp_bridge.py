@@ -31,6 +31,7 @@ def start_miniapp_server(bot_module, port: int):
             raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
             self.send_header("Content-Length", str(len(raw)))
             self.end_headers()
             self.wfile.write(raw)
@@ -75,22 +76,33 @@ def start_miniapp_server(bot_module, port: int):
             if path == "/api/tires":
                 if not self._authorized():
                     return self._send_json(403, {"error": "invalid_init_data"})
-                df = bot_module.load_df(force=True)
-                items = [{
-                    "id": idx, "row": int(r["row"]), "pallet": str(r["pallet"]).strip(),
-                    "code": str(r["code"]).strip(), "size": str(r["size"]).strip(),
-                    "name": str(r["name"]).strip(), "qty": int(r["q"]),
-                } for idx, (_, r) in enumerate(df.iterrows(), start=1)]
-                hist = [{
-                    "time": str(h.get("dt", ""))[:16], "user": h.get("user", ""),
-                    "code": str(h.get("code", "")), "action": h.get("action", ""),
-                    "was": int(h.get("was", 0) or 0), "became": int(h.get("became", 0) or 0),
-                    "diff": int(h.get("became", 0) or 0) - int(h.get("was", 0) or 0),
-                    "loc": h.get("loc", ""), "name": h.get("name", "")
-                } for h in bot_module.read_history()[-100:][::-1]]
-                sk_raw = bot_module.load_sklad() or {}
-                sklad = [{"code": c, "name": v.get("name", ""), "qty": int(v.get("qty", 0))} for c, v in sk_raw.items()]
-                return self._send_json(200, {"items": items, "history": hist, "sklad": sklad})
+                try:
+                    df = bot_module.load_df(force=True)
+                    items = [{
+                        "id": idx, "row": int(r["row"]), "pallet": str(r["pallet"]).strip(),
+                        "code": str(r["code"]).strip(), "size": str(r["size"]).strip(),
+                        "name": str(r["name"]).strip(), "qty": int(r["q"]),
+                    } for idx, (_, r) in enumerate(df.iterrows(), start=1) if str(r["code"]).strip() or str(r["name"]).strip()]
+                    bot_module._hist_cache["ts"] = 0.0
+                    raw_hist = bot_module.read_history() or []
+                    hist = []
+                    for h in raw_hist[-100:][::-1]:
+                        ts_obj = h.get("ts")
+                        t_str = ts_obj.strftime("%Y-%m-%d %H:%M") if hasattr(ts_obj, "strftime") else str(ts_obj or "")[:16]
+                        was_i = int(h.get("old", 0) or 0)
+                        bec_i = int(h.get("new", 0) or 0)
+                        hist.append({
+                            "time": t_str, "user": h.get("user", ""),
+                            "code": str(h.get("code", "")), "action": h.get("action", ""),
+                            "was": was_i, "became": bec_i, "diff": bec_i - was_i,
+                            "loc": h.get("loc", ""), "name": h.get("name", "")
+                        })
+                    sk_raw = bot_module.load_sklad(force=True) or {}
+                    sklad = [{"code": c, "name": v.get("name", ""), "qty": int(v.get("qty", 0))} for c, v in sk_raw.items()]
+                    return self._send_json(200, {"items": items, "history": hist, "sklad": sklad})
+                except Exception as e:
+                    print(f"[MiniApp API Error] /api/tires: {e}", flush=True)
+                    return self._send_json(500, {"error": str(e)})
             self.send_response(404); self.end_headers()
 
         def do_POST(self):
