@@ -137,7 +137,6 @@ def start_miniapp_server(bot_module, port: int):
                 except Exception as e:
                     print(f"[MiniApp Export Error] {path}: {e}", flush=True)
                     return self._send_json(500, {"error": str(e)})
-            self.send_response(404); self.end_headers(); return
             if path == "/api/tires":
                 if not self._authorized():
                     return self._send_json(403, {"error": "invalid_init_data"})
