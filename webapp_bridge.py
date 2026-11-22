@@ -72,7 +72,70 @@ def start_miniapp_server(bot_module, port: int):
                     self.end_headers()
                     self.wfile.write(data)
                     return
-                self.send_response(404); self.end_headers(); return
+                if path.startswith("/api/export/"):
+                if not self._authorized():
+                    return self._send_json(403, {"error": "invalid_init_data"})
+                try:
+                    qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                    df = bot_module.load_df(force=True)
+                    bio = None
+                    ctype = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    fname = "export.xlsx"
+
+                    if path == "/api/export/table.xlsx":
+                        bio = bot_module.table_xlsx(df)
+                        fname = "tires_table.xlsx"
+                    elif path == "/api/export/dashboard.xlsx":
+                        sk = bot_module.load_sklad(force=True) or {}
+                        bio = bot_module.dashboard_xlsx(df, sk)
+                        fname = "dashboard.xlsx"
+                    elif path == "/api/export/zvirka.xlsx":
+                        sk = bot_module.load_sklad(force=True) or {}
+                        bio = bot_module.zvirka_xlsx(bot_module.compare_sklad(df, sk))
+                        fname = "zvirka_sklad.xlsx"
+                    elif path == "/api/export/zal.xlsx":
+                        sk = bot_module.load_sklad(force=True) or {}
+                        bio = bot_module.display_xlsx(df, sk, key="zal")
+                        fname = "vitrina_zal.xlsx"
+                    elif path == "/api/export/sales.xlsx":
+                        sk = bot_module.load_sklad(force=True) or {}
+                        asof = bot_module.find_datetime() or bot_module.datetime.now(bot_module.KYIV)
+                        bio = bot_module.sales_xlsx(df, sk, asof)
+                        fname = "zvirka_prodazhiv.xlsx"
+                    elif path == "/api/export/pallet.pdf":
+                        raw_loc = (qs.get("loc", ["1"])[0] or "1").strip().lower()
+                        loc_map = {"вітрина зал": "zal", "вітрина вулиця": "vul", "палети фасад": "fas"}
+                        key = loc_map.get(raw_loc, raw_loc)
+                        bio = bot_module.pallet_pdf(df, key)
+                        ctype = "application/pdf"
+                        fname = f"pallet_{key}.pdf"
+                    elif path == "/api/export/optimize.pdf":
+                        mode = qs.get("mode", ["min"])[0]
+                        plan = bot_module.optimize_plan(df, mode=mode)
+                        bio = bot_module.plan_pdf(plan)
+                        ctype = "application/pdf"
+                        fname = f"optimize_{mode}.pdf"
+                    elif path == "/api/export/optimize.xlsx":
+                        mode = qs.get("mode", ["min"])[0]
+                        plan = bot_module.optimize_plan(df, mode=mode)
+                        bio = bot_module.plan_xlsx(plan)
+                        fname = f"optimize_{mode}.xlsx"
+
+                    if bio is None:
+                        return self._send_json(404, {"error": "unknown_export"})
+                    raw = bio.getvalue() if hasattr(bio, "getvalue") else bytes(bio)
+                    self.send_response(200)
+                    self.send_header("Content-Type", ctype)
+                    self.send_header("Content-Disposition", f'attachment; filename="{fname}"')
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Content-Length", str(len(raw)))
+                    self.end_headers()
+                    self.wfile.write(raw)
+                    return
+                except Exception as e:
+                    print(f"[MiniApp Export Error] {path}: {e}", flush=True)
+                    return self._send_json(500, {"error": str(e)})
+            self.send_response(404); self.end_headers(); return
             if path == "/api/tires":
                 if not self._authorized():
                     return self._send_json(403, {"error": "invalid_init_data"})

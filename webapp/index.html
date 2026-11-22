@@ -135,6 +135,7 @@
           <div class="flex flex-wrap gap-2">
             <button id="suggestPalletsBtn" type="button" class="surface rounded-xl border px-3 py-1.5 text-xs font-semibold">💡 Куди поставити?</button>
             <button id="openMorningShowcaseBtn" type="button" class="surface rounded-xl border px-3 py-1.5 text-xs font-semibold">🪟 На вітрину</button>
+            <button id="exportPalletPdfBtn" type="button" class="surface rounded-xl border px-3 py-1.5 text-xs font-semibold">📄 PDF палети</button>
             <button id="openMovePalletModalBtn" type="button" class="tg-btn rounded-xl px-3 py-1.5 text-xs font-semibold shadow-sm">🚚 Перенести палету</button>
           </div>
         </div>
@@ -193,6 +194,8 @@
           <button id="undoOptPlanBtn" type="button" class="surface hidden rounded-xl border px-4 py-2.5 text-xs font-semibold text-amber-600 dark:text-amber-400">
             ↩️ Скасувати оптимізацію
           </button>
+          <button id="exportOptPdfBtn" type="button" class="surface rounded-xl border px-3 py-2.5 text-xs font-semibold">📄 PDF</button>
+          <button id="exportOptXlsxBtn" type="button" class="surface rounded-xl border px-3 py-2.5 text-xs font-semibold">📊 Excel</button>
           <button id="cleanupZeroBtn" type="button" class="rounded-xl border border-rose-500/40 px-3.5 py-2.5 text-xs font-semibold text-rose-500">
             🧹 Очистити 0 шт.
           </button>
@@ -792,6 +795,34 @@
         </div>`;
     }
 
+    function downloadServerFile(path, filename) {
+      if (!hasBackendApi) {
+        showToast("У прев’ю доступний лише CSV; .xlsx та .pdf працюють на сервері Render");
+        return;
+      }
+      const sep = path.includes("?") ? "&" : "?";
+      const fullUrl = `${window.location.origin}${path}${sep}t=${Date.now()}`;
+      if (isInTelegram && tg) {
+        try {
+          if (typeof tg.downloadFile === "function") {
+            tg.downloadFile({ url: fullUrl, file_name: filename });
+            return;
+          }
+          if (typeof tg.openLink === "function") {
+            tg.openLink(fullUrl);
+            return;
+          }
+        } catch (e) {}
+      }
+      const a = document.createElement("a");
+      a.href = fullUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      showToast(`Завантаження ${filename}...`);
+    }
+
     function exportDashboardCsv() {
       const header = "№ палети,Код товару,Розмір,Тип (модель) резини,Кількість";
       const rows = state.tires.map(t => `${t.pallet},${t.code},"${t.size}","${t.name.replace(/"/g, '""')}",${t.qty}`);
@@ -908,7 +939,7 @@
           if (ours !== sk.qty) diffs.push({ code: sk.code, name: sk.name, ours, sklad: sk.qty, diff: ours - sk.qty });
         });
         area.innerHTML = `<div class="surface rounded-2xl border p-4 shadow-sm space-y-2">
-          <div class="flex items-center justify-between"><h3 class="text-sm font-bold">⚖️ Звірка з аркушем «Склад»</h3><span class="rounded-full bg-amber-500/15 px-2.5 py-0.5 text-xs font-bold text-amber-600 dark:text-amber-300">Розбіжностей: ${diffs.length}</span></div>
+          <div class="flex items-center justify-between"><div class="flex items-center gap-2"><h3 class="text-sm font-bold">⚖️ Звірка з аркушем «Склад»</h3><button type="button" onclick="downloadServerFile('/api/export/zvirka.xlsx', 'zvirka_sklad.xlsx')" class="surface rounded-lg border px-2 py-0.5 text-[11px] font-semibold">📥 Excel</button></div><span class="rounded-full bg-amber-500/15 px-2.5 py-0.5 text-xs font-bold text-amber-600 dark:text-amber-300">Розбіжностей: ${diffs.length}</span></div>
           <div class="max-h-96 overflow-y-auto space-y-1.5 text-xs">
             ${diffs.map(d => `<div class="flex justify-between gap-2 border-b pb-1" style="border-color: var(--tg-border);"><span class="truncate"><b>${d.code}</b> · ${d.name}</span><span class="shrink-0 font-bold ${d.diff < 0 ? "text-rose-500" : "text-emerald-600"}">У нас: ${d.ours} / Склад: ${d.sklad}</span></div>`).join("") || "<p class='text-emerald-600 font-semibold'>Все збігається!</p>"}
           </div></div>`;
@@ -965,18 +996,24 @@
         });
         const rows = Object.entries(outByCode).sort((a, b) => b[1] - a[1]);
         area.innerHTML = `<div class="surface rounded-2xl border p-4 shadow-sm space-y-2">
-          <h3 class="text-sm font-bold">💰 Звірка продажів / списань з історії</h3>
+          <div class="flex items-center justify-between gap-2"><h3 class="text-sm font-bold">💰 Звірка продажів / списань</h3><button type="button" onclick="downloadServerFile('/api/export/sales.xlsx', 'zvirka_prodazhiv.xlsx')" class="surface rounded-lg border px-2 py-0.5 text-[11px] font-semibold">📥 Excel</button></div>
           <div class="max-h-96 overflow-y-auto space-y-1.5 text-xs">
             ${rows.slice(0, 30).map(([c, q]) => `<div class="flex justify-between border-b pb-1" style="border-color: var(--tg-border);"><span class="font-mono font-semibold">${c}</span><span class="font-bold text-rose-500">−${q} шт.</span></div>`).join("") || "<p class='text-hint'>Списань у журналі немає.</p>"}
           </div></div>`;
       } else if (sec === "excel") {
         area.innerHTML = `<div class="surface rounded-2xl border p-4 shadow-sm space-y-3">
-          <h3 class="text-sm font-bold">📥 Експорт бази та дашборду</h3>
-          <p class="text-hint text-xs">Вивантажте актуальний стан таблиці у CSV для Excel або завантажте оновлений файл.</p>
-          <div class="flex flex-wrap gap-2">
-            <button id="statsExportBtn" type="button" class="tg-btn rounded-xl px-4 py-2 text-xs font-semibold shadow-sm">⬇️ Завантажити CSV</button>
+          <h3 class="text-sm font-bold">📥 Вивантаження Excel та PDF звітів</h3>
+          <p class="text-hint text-xs">Оберіть потрібний звіт — файли формуються на сервері так само, як у боті.</p>
+          <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <button type="button" data-dl="/api/export/dashboard.xlsx" data-fn="dashboard.xlsx" class="tg-btn rounded-xl px-3.5 py-2.5 text-xs font-semibold shadow-sm text-left">📊 Excel-дашборд (.xlsx)</button>
+            <button type="button" data-dl="/api/export/table.xlsx" data-fn="tires_table.xlsx" class="surface rounded-xl border px-3.5 py-2.5 text-xs font-semibold text-left">📋 Повна таблиця залишків (.xlsx)</button>
+            <button type="button" data-dl="/api/export/zvirka.xlsx" data-fn="zvirka_sklad.xlsx" class="surface rounded-xl border px-3.5 py-2.5 text-xs font-semibold text-left">⚖️ Звірка зі складом (.xlsx)</button>
+            <button type="button" data-dl="/api/export/sales.xlsx" data-fn="zvirka_prodazhiv.xlsx" class="surface rounded-xl border px-3.5 py-2.5 text-xs font-semibold text-left">💰 Звірка продажів (.xlsx)</button>
+            <button type="button" data-dl="/api/export/zal.xlsx" data-fn="vitrina_zal.xlsx" class="surface rounded-xl border px-3.5 py-2.5 text-xs font-semibold text-left">🪟 Вітрина зал (.xlsx)</button>
+            <button id="statsExportBtn" type="button" class="surface rounded-xl border px-3.5 py-2.5 text-xs font-semibold text-left">⬇️ Швидкий CSV</button>
           </div></div>`;
         document.getElementById("statsExportBtn").addEventListener("click", exportDashboardCsv);
+        area.querySelectorAll("[data-dl]").forEach(b => b.addEventListener("click", () => downloadServerFile(b.dataset.dl, b.dataset.fn)));
       } else if (sec === "zakupivlya") {
         const byCode = {};
         state.tires.forEach(t => {
@@ -1305,6 +1342,16 @@
       }
     });
 
+    document.getElementById("exportOptPdfBtn").addEventListener("click", () => {
+      downloadServerFile(`/api/export/optimize.pdf?mode=${state.optMode}`, `optimize_${state.optMode}.pdf`);
+    });
+    document.getElementById("exportOptXlsxBtn").addEventListener("click", () => {
+      downloadServerFile(`/api/export/optimize.xlsx?mode=${state.optMode}`, `optimize_${state.optMode}.xlsx`);
+    });
+    document.getElementById("exportPalletPdfBtn").addEventListener("click", () => {
+      const loc = state.loc !== "all" ? state.loc : "1";
+      downloadServerFile(`/api/export/pallet.pdf?loc=${encodeURIComponent(loc)}`, `pallet_${loc}.pdf`);
+    });
     document.getElementById("cleanupZeroBtn").addEventListener("click", async () => {
       const before = state.tires.length;
       state.tires = state.tires.filter(t => t.qty > 0);
