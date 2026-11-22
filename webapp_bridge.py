@@ -99,7 +99,8 @@ def start_miniapp_server(bot_module, port: int):
                         })
                     sk_raw = bot_module.load_sklad(force=True) or {}
                     sklad = [{"code": c, "name": v.get("name", ""), "qty": int(v.get("qty", 0))} for c, v in sk_raw.items()]
-                    return self._send_json(200, {"items": items, "history": hist, "sklad": sklad})
+                    cat_raw = bot_module.build_catalog(df) or {}
+                    return self._send_json(200, {"items": items, "history": hist, "sklad": sklad, "catalog": cat_raw})
                 except Exception as e:
                     print(f"[MiniApp API Error] /api/tires: {e}", flush=True)
                     return self._send_json(500, {"error": str(e)})
