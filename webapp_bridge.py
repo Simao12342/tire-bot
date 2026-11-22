@@ -72,7 +72,9 @@ def start_miniapp_server(bot_module, port: int):
                     self.end_headers()
                     self.wfile.write(data)
                     return
-                if path.startswith("/api/export/"):
+                self.send_response(404); self.end_headers()
+                return
+            if path.startswith("/api/export/"):
                 if not self._authorized():
                     return self._send_json(403, {"error": "invalid_init_data"})
                 try:
