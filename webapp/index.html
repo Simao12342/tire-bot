@@ -55,6 +55,7 @@
         </div>
       </div>
       <div class="flex items-center gap-1.5 shrink-0">
+        <button id="workerBtn" type="button" title="Працівник" class="surface flex h-8 items-center gap-1 rounded-xl border px-2 text-[11px] font-semibold transition active:scale-95">👤 <span id="workerNameLabel" class="max-w-[56px] truncate">Гість</span></button>
         <button id="refreshBtn" type="button" title="Оновити з таблиці" class="surface flex h-8 w-8 items-center justify-center rounded-xl border text-xs transition active:scale-95">🔄</button>
         <button id="undoBtn" type="button" title="Скасувати останню дію" class="surface hidden h-8 items-center gap-1 rounded-xl border px-2 text-xs font-semibold text-amber-600 dark:text-amber-400">↩️</button>
         <button id="themeToggleBtn" type="button" title="Змінити тему" class="surface flex h-8 w-8 items-center justify-center rounded-xl border text-xs">🌙</button>
@@ -94,6 +95,7 @@
           <button type="button" data-season="літо" class="season-pill shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold transition">☀️ Літо</button>
           <button type="button" data-season="всесезон" class="season-pill shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold transition">🌦️ В.с</button>
           <button id="lowStockToggleBtn" type="button" class="surface shrink-0 rounded-full border px-2.5 py-1 text-xs font-semibold text-hint transition">&lt;4 шт.</button>
+          <button id="openCalcModalBtn" type="button" class="surface shrink-0 rounded-full border px-2.5 py-1 text-xs font-semibold text-hint transition">🧮 Кальк.</button>
           <button id="toggleFiltersBtn" type="button" class="surface ml-auto shrink-0 rounded-full border px-2.5 py-1 text-xs font-semibold text-hint transition">⚙️ Фільтри</button>
         </div>
 
@@ -132,6 +134,7 @@
           </div>
           <div class="flex flex-wrap gap-2">
             <button id="suggestPalletsBtn" type="button" class="surface rounded-xl border px-3 py-1.5 text-xs font-semibold">💡 Куди поставити?</button>
+            <button id="openMorningShowcaseBtn" type="button" class="surface rounded-xl border px-3 py-1.5 text-xs font-semibold">🪟 На вітрину</button>
             <button id="openMovePalletModalBtn" type="button" class="tg-btn rounded-xl px-3 py-1.5 text-xs font-semibold shadow-sm">🚚 Перенести палету</button>
           </div>
         </div>
@@ -326,6 +329,80 @@
     </div>
   </div>
 
+  <!-- Modal: Analogs -->
+  <div id="analogsModal" class="fixed inset-0 z-50 hidden items-end justify-center bg-black/50 sm:items-center sm:p-4">
+    <div class="surface flex max-h-[85vh] w-full max-w-md flex-col rounded-t-3xl border p-5 shadow-2xl sm:rounded-3xl">
+      <div class="mb-3 flex items-center justify-between">
+        <div>
+          <h3 class="text-base font-bold">🔁 Аналоги в наявності</h3>
+          <p id="analogsSubtitle" class="text-hint text-xs"></p>
+        </div>
+        <button id="closeAnalogsBtn" type="button" class="text-hint px-2 py-1 text-sm font-bold">✕</button>
+      </div>
+      <div id="analogsBody" class="flex-1 overflow-y-auto space-y-2.5 text-xs"></div>
+    </div>
+  </div>
+
+  <!-- Modal: Tire Calculator -->
+  <div id="calcModal" class="fixed inset-0 z-50 hidden items-end justify-center bg-black/50 sm:items-center sm:p-4">
+    <div class="surface flex max-h-[88vh] w-full max-w-md flex-col rounded-t-3xl border p-5 shadow-2xl sm:rounded-3xl">
+      <div class="mb-3 flex items-center justify-between">
+        <h3 class="text-base font-bold">🧮 Шинний калькулятор</h3>
+        <button id="closeCalcBtn" type="button" class="text-hint px-2 py-1 text-sm font-bold">✕</button>
+      </div>
+      <div class="space-y-3 overflow-y-auto">
+        <div class="grid grid-cols-3 gap-2">
+          <div>
+            <label class="mb-1 block text-[11px] font-semibold">Ширина</label>
+            <input id="calcW1" type="number" value="205" class="surface w-full rounded-xl border px-2.5 py-1.5 text-sm font-bold outline-none" />
+          </div>
+          <div>
+            <label class="mb-1 block text-[11px] font-semibold">Профіль</label>
+            <input id="calcH1" type="number" value="55" class="surface w-full rounded-xl border px-2.5 py-1.5 text-sm font-bold outline-none" />
+          </div>
+          <div>
+            <label class="mb-1 block text-[11px] font-semibold">Радіус R</label>
+            <input id="calcR1" type="number" value="16" class="surface w-full rounded-xl border px-2.5 py-1.5 text-sm font-bold outline-none" />
+          </div>
+        </div>
+        <div class="grid grid-cols-3 gap-2">
+          <div>
+            <label class="mb-1 block text-[11px] font-semibold">Нова шир.</label>
+            <input id="calcW2" type="number" value="205" class="surface w-full rounded-xl border px-2.5 py-1.5 text-sm font-bold outline-none" />
+          </div>
+          <div>
+            <label class="mb-1 block text-[11px] font-semibold">Новий проф.</label>
+            <input id="calcH2" type="number" value="60" class="surface w-full rounded-xl border px-2.5 py-1.5 text-sm font-bold outline-none" />
+          </div>
+          <div>
+            <label class="mb-1 block text-[11px] font-semibold">Новий R</label>
+            <input id="calcR2" type="number" value="16" class="surface w-full rounded-xl border px-2.5 py-1.5 text-sm font-bold outline-none" />
+          </div>
+        </div>
+        <div id="calcDiffBox" class="rounded-xl bg-sky-500/10 p-3 text-xs space-y-1"></div>
+        <div>
+          <h4 class="mb-1.5 text-xs font-bold">Допустимі заміни (&le; 3%) на складі:</h4>
+          <div id="calcStockMatches" class="space-y-1.5 text-xs"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Worker Name (for browser shortcut) -->
+  <div id="workerModal" class="fixed inset-0 z-50 hidden items-end justify-center bg-black/50 sm:items-center sm:p-4">
+    <div class="surface w-full max-w-xs rounded-t-3xl border p-5 shadow-2xl sm:rounded-3xl space-y-3">
+      <div class="flex items-center justify-between">
+        <h3 class="text-sm font-bold">👤 Хто працює зі складом?</h3>
+        <button id="closeWorkerBtn" type="button" class="text-hint px-2 py-1 text-sm font-bold">✕</button>
+      </div>
+      <p class="text-hint text-xs">Це ім’я записуватиметься в аркуш «Історія» при роботі з ярлика браузера.</p>
+      <form id="workerForm" class="space-y-3">
+        <input id="workerInput" type="text" required placeholder="Наприклад: Сергій" class="surface w-full rounded-xl border px-3 py-2 text-sm font-semibold outline-none" />
+        <button type="submit" class="tg-btn w-full rounded-xl py-2 text-xs font-semibold shadow-sm">Зберегти ім’я</button>
+      </form>
+    </div>
+  </div>
+
   <div id="toastEl" class="pointer-events-none fixed left-1/2 top-16 z-50 hidden -translate-x-1/2 rounded-full bg-slate-900 px-4 py-2 text-xs font-semibold text-white shadow-lg dark:bg-slate-100 dark:text-slate-900"></div>
 
   <script>
@@ -373,7 +450,7 @@
     function saveLocal() {
       if (hasBackendApi) return;
       try {
-        localStorage.setItem("tire_bot_full_v6", JSON.stringify({
+        localStorage.setItem("tire_bot_full_v7", JSON.stringify({
           tires: state.tires, history: state.history.slice(0, 100), nextId: state.nextId
         }));
       } catch (e) {}
@@ -381,7 +458,7 @@
 
     function loadLocal() {
       try {
-        const raw = localStorage.getItem("tire_bot_full_v6");
+        const raw = localStorage.getItem("tire_bot_full_v7");
         if (raw) {
           const p = JSON.parse(raw);
           if (Array.isArray(p.tires) && p.tires.length) {
@@ -398,8 +475,22 @@
       state.sklad = INITIAL_SKLAD.map(s => ({ ...s }));
     }
 
+    function getWorkerName() {
+      const u = tg && tg.initDataUnsafe && tg.initDataUnsafe.user;
+      if (u) return u.username ? `@${u.username}` : [u.first_name, u.last_name].filter(Boolean).join(" ");
+      try { return localStorage.getItem("tire_bot_worker_name") || "Гість"; } catch (e) { return "Гість"; }
+    }
+
+    function updateWorkerBadge() {
+      const el = document.getElementById("workerNameLabel");
+      if (el) el.textContent = getWorkerName();
+    }
+
     async function apiCall(path, method = "GET", body = null) {
-      const headers = { "Content-Type": "application/json" };
+      const headers = {
+        "Content-Type": "application/json",
+        "X-Worker-Name": encodeURIComponent(getWorkerName())
+      };
       if (tg && tg.initData) headers["X-Telegram-Init-Data"] = tg.initData;
       const res = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : null });
       if (!res.ok) throw new Error(await res.text());
@@ -505,7 +596,7 @@
 
     function pushHistory(action, code, was, became, loc, name = "") {
       const time = new Date().toISOString().slice(0, 16).replace("T", " ");
-      state.history.unshift({ time, user: "MiniApp", code, action, was, became, diff: became - was, loc, name });
+      state.history.unshift({ time, user: getWorkerName(), code, action, was, became, diff: became - was, loc, name });
       if (state.history.length > 120) state.history.pop();
     }
 
@@ -641,7 +732,10 @@
                 <button type="button" data-action="qty" data-delta="1" data-id="${item.id}" class="surface h-7 w-7 rounded-lg border text-xs font-bold active:scale-95">+1</button>
                 <button type="button" data-action="qty" data-delta="4" data-id="${item.id}" class="surface h-7 rounded-lg border px-2 text-xs font-bold active:scale-95">+4</button>
               </div>
-              <button type="button" data-action="open-move" data-id="${item.id}" class="surface h-8 rounded-xl border px-3 text-xs font-semibold">🚚 Перемістити</button>
+              <div class="flex items-center gap-1.5">
+                <button type="button" data-action="open-analogs" data-id="${item.id}" class="surface h-8 rounded-xl border px-2.5 text-xs font-semibold">🔁 Аналоги</button>
+                <button type="button" data-action="open-move" data-id="${item.id}" class="surface h-8 rounded-xl border px-2.5 text-xs font-semibold">🚚 Переміст.</button>
+              </div>
             </div>
           </article>
         `;
@@ -823,17 +917,40 @@
         const byCode = {};
         state.tires.forEach(t => {
           if (t.qty > 0 && !zalCodes.has(t.code)) {
-            if (!byCode[t.code]) byCode[t.code] = { code: t.code, name: t.name, total: 0, locs: [] };
+            if (!byCode[t.code]) byCode[t.code] = { code: t.code, name: t.name, total: 0, bestItem: t, locs: [] };
             byCode[t.code].total += t.qty;
+            if (t.qty > byCode[t.code].bestItem.qty) byCode[t.code].bestItem = t;
             byCode[t.code].locs.push(`${locLabel(t.pallet)} (${t.qty})`);
           }
         });
         const missing = Object.values(byCode).sort((a, b) => b.total - a.total);
-        area.innerHTML = `<div class="surface rounded-2xl border p-4 shadow-sm space-y-2">
-          <h3 class="text-sm font-bold">🪟 Вітрина зал — немає на вітрині (${missing.length} кодів)</h3>
-          <div class="max-h-96 overflow-y-auto space-y-1.5 text-xs">
-            ${missing.slice(0, 40).map(m => `<div class="border-b pb-1" style="border-color: var(--tg-border);"><p class="font-semibold">${m.code} · ${m.name}</p><p class="text-hint">Є на складі (${m.total} шт.): ${m.locs.join(", ")}</p></div>`).join("")}
+        const kits = missing.filter(m => m.total >= 4);
+        area.innerHTML = `<div class="surface rounded-2xl border p-4 shadow-sm space-y-2.5">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <h3 class="text-sm font-bold">🪟 Ранковий список: виставити на вітрину (${missing.length})</h3>
+            <span class="rounded-full bg-emerald-500/15 px-2.5 py-0.5 text-[11px] font-bold text-emerald-600 dark:text-emerald-300">Комплектів &ge;4 шт.: ${kits.length}</span>
+          </div>
+          <div class="max-h-[420px] overflow-y-auto space-y-2 text-xs">
+            ${missing.slice(0, 40).map(m => `
+              <div class="flex items-center justify-between gap-2 rounded-xl border p-2.5" style="border-color: var(--tg-border);">
+                <div class="min-w-0 flex-1">
+                  <p class="font-semibold truncate">${m.total >= 4 ? "✅ " : ""}${m.code} · ${m.name}</p>
+                  <p class="text-hint text-[11px]">Склад (${m.total} шт.): ${m.locs.join(", ")}</p>
+                </div>
+                <button type="button" data-put-zal-id="${m.bestItem.id}" class="tg-btn shrink-0 rounded-xl px-2.5 py-1.5 text-[11px] font-semibold">На вітрину (1)</button>
+              </div>`).join("") || "<p class='text-emerald-600 font-semibold'>Усі наявні позиції вже є на вітрині!</p>"}
           </div></div>`;
+        area.querySelectorAll("[data-put-zal-id]").forEach(btn => btn.addEventListener("click", async () => {
+          const item = state.tires.find(x => x.id === Number(btn.dataset.putZalId));
+          if (!item || item.qty <= 0) return;
+          item.qty -= 1;
+          const existing = state.tires.find(x => x.code === item.code && String(x.pallet).trim().toLowerCase() === "вітрина зал");
+          if (existing) existing.qty += 1;
+          else state.tires.unshift({ id: state.nextId++, row: null, pallet: "вітрина зал", code: item.code, size: item.size, name: item.name, qty: 1 });
+          pushHistory("На вітрину", item.code, item.qty + 1, item.qty, `${locLabel(item.pallet)} → вітрина зал`, item.name);
+          saveLocal(); renderAll(); showToast("1 шт. виставлено на вітрину");
+          if (hasBackendApi) try { await apiCall("/api/move", "POST", { from_row: item.row, from_pallet: item.pallet, code: item.code, size: item.size, name: item.name, to_pallet: "вітрина зал", qty: 1 }); await syncFromBackend(); } catch (e) {}
+        }));
       } else if (sec === "charts") {
         area.innerHTML = `<div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
           ${barListCard("📈 За сезонами", Object.entries(seasons).sort((a, b) => b[1] - a[1]))}
@@ -1125,7 +1242,7 @@
         return;
       }
       if (act === "qty") applyQtyDelta(id, Number(btn.dataset.delta));
-      else if (act === "open-move") {
+      else if (act === "open-analogs") { openAnalogsFor(t); } else if (act === "open-move") {
         state.moveTargetId = id;
         document.getElementById("moveItemTitle").textContent = `${locLabel(t.pallet)} • ${t.name} (${t.qty} шт.)`;
         document.getElementById("moveQtyInput").value = Math.min(4, Math.max(1, t.qty));
@@ -1297,7 +1414,164 @@
       if (hasBackendApi) try { await apiCall("/api/movepallet", "POST", { from_loc: fromLoc, to_loc: toLoc }); await syncFromBackend(); } catch (err) {}
     });
 
+    function parseTireDims(str) {
+      const m = String(str || "").match(/(\d{3})\s*[/\-]\s*(\d{2})\s*[/\-]?\s*[rр]\s*(\d{2})/i);
+      if (!m) return null;
+      const w = Number(m[1]), h = Number(m[2]), r = Number(m[3]);
+      const side = w * h / 100;
+      const d = 2 * side + r * 25.4;
+      return { w, h, r, side, d, label: `${w}/${h}R${r}` };
+    }
+
+    function renderCalculator() {
+      const w1 = Number(document.getElementById("calcW1").value || 0);
+      const h1 = Number(document.getElementById("calcH1").value || 0);
+      const r1 = Number(document.getElementById("calcR1").value || 0);
+      const w2 = Number(document.getElementById("calcW2").value || 0);
+      const h2 = Number(document.getElementById("calcH2").value || 0);
+      const r2 = Number(document.getElementById("calcR2").value || 0);
+      const d1 = 2 * (w1 * h1 / 100) + r1 * 25.4;
+      const d2 = 2 * (w2 * h2 / 100) + r2 * 25.4;
+      const diffMm = d2 - d1;
+      const clearance = diffMm / 2;
+      const pct = d1 > 0 ? (diffMm / d1) * 100 : 0;
+      const ok = Math.abs(pct) <= 3;
+
+      document.getElementById("calcDiffBox").innerHTML = `
+        <div class="flex justify-between"><span>Зовнішній діаметр:</span><b>${d1.toFixed(1)} → ${d2.toFixed(1)} мм</b></div>
+        <div class="flex justify-between"><span>Зміна кліренсу:</span><b>${clearance >= 0 ? "+" : ""}${clearance.toFixed(1)} мм</b></div>
+        <div class="flex justify-between"><span>Похибка спідометра:</span><b class="${ok ? "text-emerald-600 dark:text-emerald-400" : "text-rose-500"}">${pct >= 0 ? "+" : ""}${pct.toFixed(2)}% (${ok ? "✅ допустимо" : "⚠️ > 3%"})</b></div>
+      `;
+
+      // Знайти допустимі заміни зі складу
+      const bySize = {};
+      state.tires.forEach(t => {
+        if (t.qty <= 0) return;
+        const dims = parseTireDims(t.size || t.name);
+        if (!dims || d1 <= 0) return;
+        const pDiff = ((dims.d - d1) / d1) * 100;
+        if (Math.abs(pDiff) <= 3) {
+          if (!bySize[dims.label]) bySize[dims.label] = { label: dims.label, pct: pDiff, clearance: (dims.d - d1) / 2, total: 0 };
+          bySize[dims.label].total += t.qty;
+        }
+      });
+      const matches = Object.values(bySize).sort((a, b) => Math.abs(a.pct) - Math.abs(b.pct));
+      const box = document.getElementById("calcStockMatches");
+      box.innerHTML = matches.length ? matches.map(m => `
+        <button type="button" data-calc-size="${m.label}" class="surface flex w-full items-center justify-between rounded-xl border px-3 py-2 text-left hover:border-sky-500">
+          <span><b>${m.label}</b> <span class="text-hint">(${m.clearance >= 0 ? "+" : ""}${m.clearance.toFixed(1)} мм)</span></span>
+          <span class="rounded-lg bg-emerald-500/15 px-2 py-0.5 font-bold text-emerald-600 dark:text-emerald-300">${m.total} шт.</span>
+        </button>
+      `).join("") : `<p class="text-hint">Допустимих замін на складі не знайдено.</p>`;
+
+      box.querySelectorAll("[data-calc-size]").forEach(b => b.addEventListener("click", () => {
+        state.search = b.dataset.calcSize;
+        document.getElementById("searchInput").value = b.dataset.calcSize;
+        document.getElementById("calcModal").classList.add("hidden");
+        document.getElementById("calcModal").classList.remove("flex");
+        switchTab("catalog");
+      }));
+    }
+
+    function openAnalogsFor(item) {
+      const dims = parseTireDims(item.size || item.name);
+      const season = detectSeason(item.name);
+      document.getElementById("analogsSubtitle").textContent = `${dims ? dims.label : item.size} • ${season}`;
+
+      const exactMap = {};
+      const compatMap = {};
+      state.tires.forEach(t => {
+        if (t.qty <= 0 || t.code === item.code) return;
+        const td = parseTireDims(t.size || t.name);
+        if (!td || !dims) return;
+        const tSeason = detectSeason(t.name);
+        if (td.label === dims.label) {
+          if (!exactMap[t.code]) exactMap[t.code] = { code: t.code, name: t.name, season: tSeason, total: 0, locs: [] };
+          exactMap[t.code].total += t.qty;
+          exactMap[t.code].locs.push(`${locLabel(t.pallet)} (${t.qty})`);
+        } else {
+          const pDiff = ((td.d - dims.d) / dims.d) * 100;
+          if (Math.abs(pDiff) <= 3 && (tSeason === season || season === "інше")) {
+            if (!compatMap[t.code]) compatMap[t.code] = { code: t.code, name: t.name, size: td.label, clearance: (td.d - dims.d) / 2, total: 0, locs: [] };
+            compatMap[t.code].total += t.qty;
+            compatMap[t.code].locs.push(`${locLabel(t.pallet)} (${t.qty})`);
+          }
+        }
+      });
+
+      const exactList = Object.values(exactMap).sort((a, b) => b.total - a.total);
+      const compatList = Object.values(compatMap).sort((a, b) => b.total - a.total);
+
+      const renderGroup = (title, list, isCompat = false) => `
+        <div class="space-y-1.5">
+          <h4 class="font-bold text-xs">${title} (${list.length})</h4>
+          ${list.slice(0, 15).map(x => `
+            <button type="button" data-pick-code="${x.code}" class="surface flex w-full items-center justify-between gap-2 rounded-xl border p-2.5 text-left hover:border-sky-500">
+              <div class="min-w-0 flex-1">
+                <p class="font-semibold truncate">${x.total >= 4 ? "✅ " : ""}${x.name}</p>
+                <p class="text-hint text-[11px]">${isCompat ? `${x.clearance >= 0 ? "+" : ""}${x.clearance.toFixed(1)} мм • ` : ""}${x.locs.join(", ")}</p>
+              </div>
+              <span class="shrink-0 rounded-lg px-2 py-0.5 font-bold ${x.total >= 4 ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-300" : "bg-amber-500/15 text-amber-600"}">${x.total} шт.</span>
+            </button>
+          `).join("") || `<p class="text-hint">Немає в наявності</p>`}
+        </div>`;
+
+      const bodyEl = document.getElementById("analogsBody");
+      bodyEl.innerHTML = renderGroup("Той самий розмір", exactList) + renderGroup("Допустима заміна (<=3%)", compatList, true);
+      bodyEl.querySelectorAll("[data-pick-code]").forEach(b => b.addEventListener("click", () => {
+        state.search = b.dataset.pickCode;
+        document.getElementById("searchInput").value = b.dataset.pickCode;
+        document.getElementById("analogsModal").classList.add("hidden");
+        document.getElementById("analogsModal").classList.remove("flex");
+        renderCatalog();
+      }));
+
+      document.getElementById("analogsModal").classList.remove("hidden");
+      document.getElementById("analogsModal").classList.add("flex");
+    }
+
+    document.getElementById("openCalcModalBtn").addEventListener("click", () => {
+      renderCalculator();
+      document.getElementById("calcModal").classList.remove("hidden");
+      document.getElementById("calcModal").classList.add("flex");
+    });
+    document.getElementById("closeCalcBtn").addEventListener("click", () => {
+      document.getElementById("calcModal").classList.add("hidden");
+      document.getElementById("calcModal").classList.remove("flex");
+    });
+    ["calcW1", "calcH1", "calcR1", "calcW2", "calcH2", "calcR2"].forEach(id =>
+      document.getElementById(id).addEventListener("input", renderCalculator)
+    );
+    document.getElementById("closeAnalogsBtn").addEventListener("click", () => {
+      document.getElementById("analogsModal").classList.add("hidden");
+      document.getElementById("analogsModal").classList.remove("flex");
+    });
+    document.getElementById("openMorningShowcaseBtn").addEventListener("click", () => {
+      state.activeStat = "zal";
+      switchTab("stats");
+    });
+    document.getElementById("workerBtn").addEventListener("click", () => {
+      document.getElementById("workerInput").value = getWorkerName() === "Гість" ? "" : getWorkerName();
+      document.getElementById("workerModal").classList.remove("hidden");
+      document.getElementById("workerModal").classList.add("flex");
+    });
+    document.getElementById("closeWorkerBtn").addEventListener("click", () => {
+      document.getElementById("workerModal").classList.add("hidden");
+      document.getElementById("workerModal").classList.remove("flex");
+    });
+    document.getElementById("workerForm").addEventListener("submit", e => {
+      e.preventDefault();
+      const val = document.getElementById("workerInput").value.trim();
+      if (!val) return;
+      try { localStorage.setItem("tire_bot_worker_name", val); } catch (err) {}
+      updateWorkerBadge();
+      document.getElementById("workerModal").classList.add("hidden");
+      document.getElementById("workerModal").classList.remove("flex");
+      showToast(`Працівник: ${val}`);
+    });
+
     loadLocal();
+    updateWorkerBadge();
     initTelegram();
     renderAll();
     syncFromBackend();

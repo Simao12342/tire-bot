@@ -114,10 +114,21 @@ def start_miniapp_server(bot_module, port: int):
             try:
                 body = self._read_json()
 
+                tg_user_data = {}
+                init_raw = self.headers.get("X-Telegram-Init-Data", "")
+                if init_raw:
+                    try:
+                        parsed_qs = dict(urllib.parse.parse_qsl(init_raw, strict_parsing=False))
+                        if "user" in parsed_qs:
+                            tg_user_data = json.loads(parsed_qs["user"])
+                    except Exception:
+                        pass
+                w_name = urllib.parse.unquote(self.headers.get("X-Worker-Name", "")).strip()
+
                 class _WebUser:
-                    id = 0
-                    first_name = "MiniApp"
-                    username = "miniapp"
+                    id = tg_user_data.get("id", 0)
+                    first_name = tg_user_data.get("first_name") or w_name or "MiniApp"
+                    username = tg_user_data.get("username") or (w_name.lstrip("@") if w_name.startswith("@") else "")
 
                 user = _WebUser()
                 if path == "/api/qty":
